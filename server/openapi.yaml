@@ -1,0 +1,61 @@
+openapi: 3.1.0
+info:
+  title: Restaurant Queue API
+  version: 0.1.0
+  description: API contract for the restaurant queue and order notification platform.
+servers:
+  - url: /
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Check whether the API process is alive
+      responses:
+        "200":
+          description: The API process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+  /readyz:
+    get:
+      operationId: getReadiness
+      summary: Check whether the API can serve requests
+      responses:
+        "200":
+          description: Required dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "503":
+          description: A required dependency is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+components:
+  schemas:
+    SuccessEnvelope:
+      type: object
+      required: [success, message, data]
+      properties:
+        success:
+          const: true
+        message:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+    ErrorEnvelope:
+      type: object
+      required: [success, message, code, data]
+      properties:
+        success:
+          const: false
+        message:
+          type: string
+        code:
+          type: string
+        data:
+          type: "null"
