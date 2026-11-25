@@ -1,0 +1,316 @@
+.page {
+  min-height: 100svh;
+  background: var(--background);
+  color: var(--foreground);
+  caret-color: var(--primary);
+}
+
+.page ::selection {
+  background: rgba(255, 56, 92, 0.2);
+  color: var(--foreground);
+}
+
+.shell {
+  width: min(calc(100% - 48px), 1180px);
+  margin: 0 auto;
+}
+
+.skipLink {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  left: 8px;
+  padding: 12px 16px;
+  transform: translateY(-160%);
+  border-radius: 8px;
+  background: var(--foreground);
+  color: var(--background);
+  font-size: 14px;
+}
+
+.skipLink:focus {
+  transform: translateY(0);
+}
+
+.header {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.wordmark,
+.headerLink {
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.wordmark {
+  letter-spacing: -0.02em;
+}
+
+.headerLink {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  text-underline-offset: 4px;
+}
+
+.wordmark:focus-visible,
+.headerLink:focus-visible,
+.skipLink:focus-visible,
+.modeTabs button:focus-visible,
+.field input:focus-visible,
+.primaryButton:focus-visible,
+.textButton:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 3px;
+}
+
+.accountPanel {
+  width: min(100%, 520px);
+  margin: 0 auto;
+  padding: clamp(44px, 8vw, 88px) 0;
+}
+
+.accountPanel h1 {
+  max-width: 13ch;
+  margin: 0;
+  font-size: clamp(36px, 6vw, 50px);
+  font-weight: 600;
+  letter-spacing: -0.045em;
+  line-height: 1.06;
+}
+
+.intro {
+  margin: 18px 0 0;
+  color: var(--body);
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.modeTabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 34px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.modeTabs button {
+  min-height: 52px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.modeTabs .selectedTab {
+  border-bottom-color: var(--primary);
+  color: var(--foreground);
+}
+
+.form {
+  display: grid;
+  gap: 20px;
+  padding-top: 26px;
+}
+
+.field {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 7px;
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.field input {
+  width: 100%;
+  min-width: 0;
+  height: 52px;
+  padding: 0 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 400;
+}
+
+.field input:focus-visible {
+  border-color: var(--foreground);
+  outline-offset: 1px;
+}
+
+.field small {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.primaryButton {
+  display: inline-flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 22px;
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  background: var(--primary);
+  color: var(--on-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  transition:
+    background-color 160ms ease-out,
+    border-color 160ms ease-out;
+}
+
+.primaryButton:hover:not(:disabled) {
+  border-color: var(--primary-active);
+  background: var(--primary-active);
+}
+
+.primaryButton:disabled {
+  border-color: var(--primary-disabled);
+  background: var(--primary-disabled);
+  cursor: wait;
+}
+
+.textButton {
+  justify-self: start;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.textButton:disabled {
+  color: var(--muted);
+  cursor: wait;
+}
+
+.errorMessage,
+.message,
+.status {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.errorMessage {
+  color: #b32505;
+}
+
+.message,
+.status {
+  color: var(--body);
+}
+
+.confirmation {
+  margin-top: 34px;
+  padding: 22px 0;
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.confirmation h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.confirmation p {
+  margin: 10px 0 14px;
+  color: var(--body);
+  font-size: 15px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.status {
+  margin-top: 30px;
+}
+
+.footer {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--hairline);
+}
+
+.footer p,
+.footer a {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.footer a {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  text-underline-offset: 3px;
+}
+
+.headerLink:hover,
+.footer a:hover {
+  color: var(--primary-active);
+  text-decoration: underline;
+}
+
+@media (max-width: 560px) {
+  .shell {
+    width: min(calc(100% - 36px), 1180px);
+  }
+
+  .header {
+    min-height: 64px;
+  }
+
+  .accountPanel {
+    padding: 48px 0 56px;
+  }
+
+  .accountPanel h1 {
+    font-size: clamp(36px, 11vw, 46px);
+  }
+
+  .primaryButton {
+    width: 100%;
+  }
+
+  .footer {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+    padding: 14px 0;
+  }
+}

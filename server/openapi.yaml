@@ -34,8 +34,1071 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+  /api/public/tickets/{publicToken}:
+    get:
+      operationId: getPublicTicket
+      summary: Read the status of a private queue or pickup ticket
+      parameters:
+        - name: publicToken
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{43}$"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "404":
+          $ref: "#/components/responses/WorkspaceError"
+        "429":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/public/tickets/{publicToken}/events:
+    get:
+      operationId: streamPublicTicketEvents
+      summary: Subscribe to updates for a private queue or pickup ticket
+      parameters:
+        - name: publicToken
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{43}$"
+      responses:
+        "200":
+          description: Server-sent events scoped to this ticket.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/WorkspaceError"
+        "429":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/staff/events:
+    get:
+      operationId: streamStaffEvents
+      summary: Subscribe to updates for the active staff restaurant
+      security:
+        - StaffSession: []
+      responses:
+        "200":
+          description: Server-sent events scoped to the active restaurant.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/staff/queues/{queueID}/call-next:
+    post:
+      operationId: callNextStaffQueueTicket
+      summary: Atomically claim the oldest waiting ticket in a table queue
+      security:
+        - StaffSession: []
+      parameters:
+        - name: queueID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+        "409":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/public/accounts:
+    post:
+      operationId: registerOwnerAccount
+      summary: Register an owner account and send an email verification link
+      parameters:
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OwnerAccountRegistrationRequest"
+      responses:
+        "202":
+          description: A verification email was sent when the account can be registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "400":
+          description: The account details are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Too many account requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Email delivery is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/public/accounts/verify:
+    post:
+      operationId: verifyOwnerEmail
+      summary: Verify an owner email and create an owner session
+      parameters:
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OwnerAccountVerificationRequest"
+      responses:
+        "200":
+          description: The email address was verified and a session was created.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                description: HttpOnly owner session cookie.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerAccountSessionEnvelope"
+        "400":
+          description: The verification link is invalid or expired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/public/accounts/verification/resend:
+    post:
+      operationId: resendOwnerVerification
+      summary: Send a new verification link when the account needs verification
+      parameters:
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OwnerAccountEmailRequest"
+      responses:
+        "202":
+          description: An acknowledgement that does not reveal whether the account exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "400":
+          description: The email address is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Too many account requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Email delivery is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/owner/auth/login:
+    post:
+      operationId: loginOwner
+      summary: Sign in with an email-verified owner account
+      parameters:
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OwnerAccountLoginRequest"
+      responses:
+        "200":
+          description: An owner session was created.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                description: HttpOnly owner session cookie.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerAccountSessionEnvelope"
+        "401":
+          description: The credentials are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: The email address has not been verified.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Too many sign-in attempts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/owner/auth/logout:
+    post:
+      operationId: logoutOwner
+      summary: End the current owner session
+      parameters:
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      responses:
+        "200":
+          description: The session was ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+  /api/owner/auth/me:
+    get:
+      operationId: getOwnerSession
+      summary: Read the current verified owner account
+      security:
+        - OwnerSession: []
+      responses:
+        "200":
+          description: The current verified owner.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerAccountSessionEnvelope"
+        "401":
+          description: A verified owner session is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/owner/applications:
+    post:
+      operationId: createBusinessApplication
+      summary: Submit a restaurant application as a verified owner
+      security:
+        - OwnerSession: []
+      parameters:
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBusinessApplicationRequest"
+      responses:
+        "201":
+          description: The application was received.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatedApplicationEnvelope"
+        "400":
+          description: The application details are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: A verified owner session is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: The restaurant URL or owner email is already in use.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Too many applications were submitted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/public/applications/{statusToken}:
+    get:
+      operationId: getBusinessApplicationStatus
+      summary: Read an application using its private status token
+      parameters:
+        - name: statusToken
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{43}$"
+      responses:
+        "200":
+          description: Application status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicApplicationStatusEnvelope"
+        "404":
+          description: The application does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Too many status checks were made.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/owner/workspaces/{slug}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+    get:
+      operationId: getOwnerWorkspace
+      summary: Read restaurant details and live workspace counts
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+        "404":
+          $ref: "#/components/responses/WorkspaceError"
+    patch:
+      operationId: updateOwnerWorkspace
+      summary: Update restaurant profile and queue availability
+      description: Requires an owner or manager membership.
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceMutation"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/WorkspaceError"
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+        "403":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/qr:
+    get:
+      operationId: getOwnerWorkspaceQR
+      summary: Download a QR code for the public restaurant page
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - name: download
+          in: query
+          required: false
+          schema:
+            const: "1"
+      responses:
+        "200":
+          description: A PNG QR code for the public restaurant page.
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/queue:
+    get:
+      operationId: listOwnerWorkspaceQueue
+      summary: List active table-queue tickets for the business day
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/queue/call-next:
+    post:
+      operationId: callNextOwnerWorkspaceTicket
+      summary: Atomically call the oldest waiting table-queue ticket
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+        "409":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/events:
+    get:
+      operationId: streamOwnerWorkspaceEvents
+      summary: Subscribe to restaurant operations updates
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "200":
+          description: Server-sent events scoped to this restaurant.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/queue/{ticketID}:
+    patch:
+      operationId: updateOwnerWorkspaceTicket
+      summary: Advance or cancel a table-queue ticket
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - name: ticketID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [CALLED, ARRIVED, NO_SHOW, CANCELLED]
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/WorkspaceError"
+        "409":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/orders:
+    get:
+      operationId: listOwnerWorkspaceOrders
+      summary: List pickup orders for the restaurant
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+    post:
+      operationId: createOwnerWorkspaceOrder
+      summary: Create a pickup order and one-time pickup code
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes:
+                  type: string
+                  maxLength: 2000
+      responses:
+        "201":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/orders/{orderID}/status:
+    patch:
+      operationId: updateOwnerWorkspaceOrderStatus
+      summary: Advance or cancel a pickup order
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - name: orderID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [ACCEPTED, PREPARING, READY, PICKED_UP, CANCELLED]
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/WorkspaceError"
+        "409":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/tables:
+    get:
+      operationId: listOwnerWorkspaceTables
+      summary: List restaurant tables and active assignments
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+    post:
+      operationId: createOwnerWorkspaceTable
+      summary: Add a restaurant table
+      description: Requires an owner or manager membership.
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceMutation"
+      responses:
+        "201":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/tables/{tableID}:
+    patch:
+      operationId: updateOwnerWorkspaceTable
+      summary: Rename, resize, activate, or deactivate a table
+      description: Requires an owner or manager membership.
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - name: tableID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceMutation"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/WorkspaceError"
+        "409":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/tables/{tableID}/assignments:
+    post:
+      operationId: assignOwnerWorkspaceTable
+      summary: Seat an arrived guest at an available table
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - name: tableID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticketId]
+              properties:
+                ticketId:
+                  type: string
+                  format: uuid
+      responses:
+        "201":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "409":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/tables/{tableID}/assignments/{assignmentID}:
+    delete:
+      operationId: releaseOwnerWorkspaceTable
+      summary: Release an occupied table
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - name: tableID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: assignmentID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "404":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/staff:
+    get:
+      operationId: listOwnerWorkspaceStaff
+      summary: List active team members and pending invitations
+      description: Requires an owner or manager membership.
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "403":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/staff/invitations:
+    post:
+      operationId: createOwnerWorkspaceStaffInvitation
+      summary: Invite a manager or staff member by email
+      description: Requires an owner or manager membership.
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email:
+                  type: string
+                  format: email
+                role:
+                  type: string
+                  enum: [MANAGER, STAFF]
+      responses:
+        "201":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/WorkspaceError"
+        "403":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/staff/{userID}:
+    delete:
+      operationId: deactivateOwnerWorkspaceStaff
+      summary: Remove a staff member's restaurant access
+      description: Requires an owner or manager membership.
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - name: userID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "403":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/staff/invitations/{invitationID}:
+    delete:
+      operationId: revokeOwnerWorkspaceStaffInvitation
+      summary: Revoke a pending staff invitation
+      description: Requires an owner or manager membership.
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+        - name: invitationID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "403":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/workspaces/{slug}/analytics:
+    get:
+      operationId: getOwnerWorkspaceAnalytics
+      summary: Read today's queue and pickup-order activity
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+  /api/owner/workspaces/{slug}/notifications:
+    get:
+      operationId: listOwnerWorkspaceNotifications
+      summary: Read up to 100 recorded notification attempts
+      description: Notification records do not indicate that a customer received or read a message.
+      security:
+        - OwnerSession: []
+        - StaffSession: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceSlug"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+  /api/public/staff-invitations/{token}:
+    get:
+      operationId: getStaffInvitation
+      summary: Read public details for a pending staff invitation
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{43}$"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/public/staff-invitations/accept:
+    post:
+      operationId: acceptStaffInvitation
+      summary: Accept an invitation and create a staff session
+      parameters:
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceMutation"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/WorkspaceError"
+        "429":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/platform/auth/login:
+    post:
+      operationId: loginPlatformAdmin
+      summary: Sign in as a platform administrator
+      parameters:
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlatformAdminLoginRequest"
+      responses:
+        "200":
+          description: A platform administrator session was created.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                description: HttpOnly platform administrator session cookie.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlatformAdminSessionEnvelope"
+        "401":
+          description: The credentials are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Too many sign-in attempts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/platform/auth/logout:
+    post:
+      operationId: logoutPlatformAdmin
+      summary: End the current platform administrator session
+      parameters:
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      responses:
+        "200":
+          description: The session was ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+  /api/platform/auth/me:
+    get:
+      operationId: getPlatformAdminSession
+      summary: Read the current platform administrator session
+      security:
+        - PlatformAdminSession: []
+      responses:
+        "200":
+          description: The current administrator identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlatformAdminSessionEnvelope"
+        "401":
+          description: A valid platform administrator session is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/platform/applications:
+    get:
+      operationId: listBusinessApplications
+      summary: List restaurant applications for review
+      security:
+        - PlatformAdminSession: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [PENDING, APPROVED, REJECTED, ALL]
+            default: PENDING
+      responses:
+        "200":
+          description: Matching business applications, newest first, capped at 100.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusinessApplicationsEnvelope"
+        "400":
+          description: The requested status filter is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: A valid platform administrator session is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/platform/applications/{applicationID}/approve:
+    post:
+      operationId: approveBusinessApplication
+      summary: Approve an application and create its restaurant and owner
+      security:
+        - PlatformAdminSession: []
+      parameters:
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+        - name: applicationID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The restaurant and owner were created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovedApplicationEnvelope"
+        "401":
+          description: A valid platform administrator session is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: The application does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: The application was reviewed or conflicts with an existing restaurant or owner.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/platform/applications/{applicationID}/reject:
+    post:
+      operationId: rejectBusinessApplication
+      summary: Decline an application with a note for the owner
+      security:
+        - PlatformAdminSession: []
+      parameters:
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+        - name: applicationID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RejectBusinessApplicationRequest"
+      responses:
+        "200":
+          description: The application was declined.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "400":
+          description: The review note is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: A valid platform administrator session is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: The application does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: The application was already reviewed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
 components:
+  securitySchemes:
+    PlatformAdminSession:
+      type: apiKey
+      in: cookie
+      name: restaurant_platform_admin_session
+    OwnerSession:
+      type: apiKey
+      in: cookie
+      name: restaurant_owner_session
+    StaffSession:
+      type: apiKey
+      in: cookie
+      name: restaurant_staff_session
+  parameters:
+    BrowserMutationHeader:
+      name: X-Requested-With
+      in: header
+      required: true
+      schema:
+        const: XMLHttpRequest
+    WorkspaceSlug:
+      name: slug
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    WorkspaceResponse:
+      description: The request succeeded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/WorkspaceEnvelope"
+    WorkspaceError:
+      description: The request could not be completed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    WorkspaceEnvelope:
+      type: object
+      required: [success, message, data]
+      properties:
+        success:
+          const: true
+        message:
+          type: string
+        data: {}
+    WorkspaceMutation:
+      type: object
+      additionalProperties: true
     SuccessEnvelope:
       type: object
       required: [success, message, data]
@@ -59,3 +1122,266 @@ components:
           type: string
         data:
           type: "null"
+    CreatedApplicationEnvelope:
+      type: object
+      required: [success, message, data]
+      properties:
+        success:
+          const: true
+        message:
+          type: string
+        data:
+          type: object
+          required: [statusToken]
+          properties:
+            statusToken:
+              type: string
+              pattern: "^[A-Za-z0-9_-]{43}$"
+    PublicApplicationStatusEnvelope:
+      type: object
+      required: [success, message, data]
+      properties:
+        success:
+          const: true
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PublicApplicationStatus"
+    PublicApplicationStatus:
+      type: object
+      required:
+        [
+          businessName,
+          status,
+          restaurantSlug,
+          reviewNote,
+          createdAt,
+          reviewedAt,
+        ]
+      properties:
+        businessName:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+        restaurantSlug:
+          type: [string, "null"]
+        reviewNote:
+          type: [string, "null"]
+        createdAt:
+          type: string
+          format: date-time
+        reviewedAt:
+          type: [string, "null"]
+          format: date-time
+    CreateBusinessApplicationRequest:
+      type: object
+      required:
+        - businessName
+        - businessType
+        - slug
+        - tableQueueEnabled
+        - pickupQueueEnabled
+      properties:
+        businessName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        businessType:
+          type: string
+          enum: [RESTAURANT, BAKERY, EATERY]
+        slug:
+          type: string
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+        address:
+          type: string
+          maxLength: 500
+        phone:
+          type: string
+          maxLength: 50
+        tableQueueEnabled:
+          type: boolean
+        pickupQueueEnabled:
+          type: boolean
+    OwnerAccountRegistrationRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        email:
+          type: string
+          format: email
+          maxLength: 320
+        password:
+          type: string
+          minLength: 12
+          maxLength: 1024
+          writeOnly: true
+    OwnerAccountVerificationRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+    OwnerAccountEmailRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 320
+    OwnerAccountLoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 320
+        password:
+          type: string
+          maxLength: 1024
+          writeOnly: true
+    OwnerAccountSessionEnvelope:
+      type: object
+      required: [success, message, data]
+      properties:
+        success:
+          const: true
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/OwnerAccountSession"
+    OwnerAccountSession:
+      type: object
+      required: [name, email]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+    PlatformAdminLoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 320
+        password:
+          type: string
+          maxLength: 1024
+          writeOnly: true
+    PlatformAdminSessionEnvelope:
+      type: object
+      required: [success, message, data]
+      properties:
+        success:
+          const: true
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PlatformAdminSession"
+    PlatformAdminSession:
+      type: object
+      required: [name, email]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+    BusinessApplicationsEnvelope:
+      type: object
+      required: [success, message, data]
+      properties:
+        success:
+          const: true
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/BusinessApplication"
+    BusinessApplication:
+      type: object
+      required:
+        - id
+        - businessName
+        - businessType
+        - slug
+        - address
+        - phone
+        - ownerName
+        - ownerEmail
+        - tableQueueEnabled
+        - pickupQueueEnabled
+        - status
+        - reviewNote
+        - createdAt
+        - reviewedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        businessName:
+          type: string
+        businessType:
+          type: string
+          enum: [RESTAURANT, BAKERY, EATERY]
+        slug:
+          type: string
+        address:
+          type: [string, "null"]
+        phone:
+          type: [string, "null"]
+        ownerName:
+          type: string
+        ownerEmail:
+          type: string
+          format: email
+        tableQueueEnabled:
+          type: boolean
+        pickupQueueEnabled:
+          type: boolean
+        status:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+        reviewNote:
+          type: [string, "null"]
+        createdAt:
+          type: string
+          format: date-time
+        reviewedAt:
+          type: [string, "null"]
+          format: date-time
+    ApprovedApplicationEnvelope:
+      type: object
+      required: [success, message, data]
+      properties:
+        success:
+          const: true
+        message:
+          type: string
+        data:
+          type: object
+          required: [businessName, slug]
+          properties:
+            businessName:
+              type: string
+            slug:
+              type: string
+    RejectBusinessApplicationRequest:
+      type: object
+      required: [reviewNote]
+      properties:
+        reviewNote:
+          type: string
+          minLength: 1
+          maxLength: 1000

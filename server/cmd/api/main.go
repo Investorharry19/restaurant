@@ -16,6 +16,7 @@ import (
 	"restaurant/server/internal/config"
 	"restaurant/server/internal/database"
 	"restaurant/server/internal/httpapi"
+	"restaurant/server/internal/realtime"
 )
 
 func run() error {
@@ -40,9 +41,20 @@ func run() error {
 		}
 	}()
 
+	eventHub := realtime.NewHub()
 	server := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewHandler(db, logger, cfg.CORSOrigins, cfg.AppEnv == "production"),
+		Addr: cfg.HTTPAddr,
+		Handler: httpapi.NewHandlerWithRealtime(
+			db,
+			logger,
+			cfg.CORSOrigins,
+			cfg.AppEnv == "production",
+			cfg.SessionTTL,
+			cfg.SessionCookieDomain,
+			cfg.AppBaseURL,
+			httpapi.NewResendVerificationEmailSender(cfg.ResendAPIKey, cfg.ResendFromEmail),
+			eventHub,
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -60,7 +72,15 @@ func run() error {
 	}
 
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	publisherDone := make(chan struct{})
+	go func() {
+		defer close(publisherDone)
+		realtime.NewPublisher(db, logger, eventHub).Run(signalCtx)
+	}()
+	defer func() {
+		stop()
+		<-publisherDone
+	}()
 
 	serveErrors := make(chan error, 1)
 	go func() {
