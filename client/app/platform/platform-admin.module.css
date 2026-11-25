@@ -301,6 +301,20 @@
   gap: 18px;
 }
 
+.applicationIdentity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 14px;
+}
+
+.applicationLogo {
+  flex: 0 0 64px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  object-fit: contain;
+}
+
 .applicationHeading h2 {
   margin: 0;
   font-size: 20px;

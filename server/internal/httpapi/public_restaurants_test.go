@@ -1,19 +1,28 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/skip2/go-qrcode"
 )
 
 type fakePublicRestaurantReader struct {
 	restaurant publicRestaurant
+	logo       []byte
+	logoType   string
 	err        error
 	slug       string
 }
@@ -24,6 +33,17 @@ func (reader *fakePublicRestaurantReader) FindBySlug(
 ) (publicRestaurant, error) {
 	reader.slug = slug
 	return reader.restaurant, reader.err
+}
+
+func (reader *fakePublicRestaurantReader) FindLogoBySlug(
+	_ context.Context,
+	slug string,
+) ([]byte, string, error) {
+	reader.slug = slug
+	if reader.logo == nil {
+		return nil, "", sql.ErrNoRows
+	}
+	return reader.logo, reader.logoType, reader.err
 }
 
 func TestPublicRestaurantEndpointReturnsSafeRestaurantData(t *testing.T) {
@@ -62,6 +82,36 @@ func TestPublicRestaurantEndpointReturnsSafeRestaurantData(t *testing.T) {
 	}
 	if strings.Contains(recorder.Body.String(), `"id"`) {
 		t.Fatalf("public response exposed an internal ID: %q", recorder.Body.String())
+	}
+}
+
+func TestPublicRestaurantLogoEndpointReturnsStoredImageWithSafeHeaders(t *testing.T) {
+	logoData := []byte("stored-logo-bytes")
+	reader := &fakePublicRestaurantReader{
+		logo:     logoData,
+		logoType: "image/png",
+	}
+	handler := publicRestaurantTestHandler(reader)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "/api/public/restaurants/sample-restaurant/logo", nil),
+	)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if recorder.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("Content-Type = %q, want image/png", recorder.Header().Get("Content-Type"))
+	}
+	if recorder.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", recorder.Header().Get("X-Content-Type-Options"))
+	}
+	if !bytes.Equal(recorder.Body.Bytes(), logoData) {
+		t.Fatalf("logo body = %q, want stored bytes %q", recorder.Body.Bytes(), logoData)
+	}
+	if reader.slug != "sample-restaurant" {
+		t.Fatalf("slug = %q, want sample-restaurant", reader.slug)
 	}
 }
 
@@ -156,6 +206,76 @@ func TestEnabledQueueTypesPreservePublicOrderAndEmptyArray(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDecodeRestaurantLogoAcceptsBoundedPNGAndRejectsMismatches(t *testing.T) {
+	var encodedPNG bytes.Buffer
+	source := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			source.Set(x, y, color.RGBA{R: 220, A: 255})
+		}
+	}
+	if err := png.Encode(&encodedPNG, source); err != nil {
+		t.Fatal(err)
+	}
+	base64PNG := base64.StdEncoding.EncodeToString(encodedPNG.Bytes())
+	logo, err := decodeRestaurantLogo(base64PNG, "image/png")
+	if err != nil {
+		t.Fatalf("decodeRestaurantLogo() error = %v", err)
+	}
+	if logo.ContentType != "image/png" || !bytes.Equal(logo.Data, encodedPNG.Bytes()) {
+		t.Fatal("decodeRestaurantLogo() did not preserve the validated PNG")
+	}
+	for _, invalid := range []struct {
+		encoded     string
+		contentType string
+	}{
+		{encoded: base64PNG, contentType: "image/jpeg"},
+		{encoded: "not-base64", contentType: "image/png"},
+		{encoded: "", contentType: "image/png"},
+	} {
+		if _, err := decodeRestaurantLogo(invalid.encoded, invalid.contentType); err == nil {
+			t.Errorf("decodeRestaurantLogo(%q, %q) accepted invalid logo", invalid.encoded[:min(len(invalid.encoded), 16)], invalid.contentType)
+		}
+	}
+}
+
+func TestAddLogoToQRCodeKeepsDimensionsAndPlacesLogoAtCenter(t *testing.T) {
+	qr, err := qrcode.Encode("https://example.test/r/sample", qrcode.High, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logo := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			logo.Set(x, y, color.RGBA{R: 255, G: 0, B: 0, A: 255})
+		}
+	}
+	var logoPNG bytes.Buffer
+	if err := png.Encode(&logoPNG, logo); err != nil {
+		t.Fatal(err)
+	}
+
+	withLogo, err := addLogoToQRCode(qr, logoPNG.Bytes())
+	if err != nil {
+		t.Fatalf("addLogoToQRCode() error = %v", err)
+	}
+	decoded, _, err := image.Decode(bytes.NewReader(withLogo))
+	if err != nil {
+		t.Fatalf("decode logo QR: %v", err)
+	}
+	original, _, err := image.Decode(bytes.NewReader(qr))
+	if err != nil {
+		t.Fatalf("decode original QR: %v", err)
+	}
+	if decoded.Bounds() != original.Bounds() {
+		t.Fatalf("QR bounds = %v, want %v", decoded.Bounds(), original.Bounds())
+	}
+	center := decoded.At(decoded.Bounds().Dx()/2, decoded.Bounds().Dy()/2)
+	if red, green, blue, _ := center.RGBA(); red <= green || red <= blue {
+		t.Fatalf("center pixel = %v, want logo color", center)
 	}
 }
 

@@ -225,6 +225,12 @@ func Parse(lookup LookupEnv) (Config, error) {
 	if _, err := parseOrigin(appBaseURL); err != nil {
 		return Config{}, fmt.Errorf("invalid APP_BASE_URL: %w", err)
 	}
+	if appEnv == "production" {
+		appBase, err := url.Parse(appBaseURL)
+		if err != nil || appBase.Scheme != "https" {
+			return Config{}, fmt.Errorf("APP_BASE_URL must use HTTPS in production")
+		}
+	}
 
 	frontendURL, err := required(lookup, "FRONTEND_URL")
 	if err != nil {

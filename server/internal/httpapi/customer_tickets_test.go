@@ -118,6 +118,75 @@ func TestNewPublicTicketTokenHas256URLSafeBits(t *testing.T) {
 	}
 }
 
+func TestValidatePushSubscriptionKeys(t *testing.T) {
+	publicKey := make([]byte, 65)
+	publicKey[0] = 4
+	authKey := make([]byte, 16)
+	valid := pushSubscriptionRequest{Endpoint: "https://push.example.test/send"}
+	valid.Keys.P256dh = base64.RawURLEncoding.EncodeToString(publicKey)
+	valid.Keys.Auth = base64.RawURLEncoding.EncodeToString(authKey)
+	if err := validatePushSubscriptionKeys(valid); err != nil {
+		t.Fatalf("validatePushSubscriptionKeys() rejected a valid subscription: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		edit func(*pushSubscriptionRequest)
+	}{
+		{
+			name: "insecure endpoint",
+			edit: func(body *pushSubscriptionRequest) {
+				body.Endpoint = "http://push.example.test/send"
+			},
+		},
+		{
+			name: "nonstandard port",
+			edit: func(body *pushSubscriptionRequest) {
+				body.Endpoint = "https://push.example.test:8443/send"
+			},
+		},
+		{
+			name: "invalid public key",
+			edit: func(body *pushSubscriptionRequest) {
+				body.Keys.P256dh = base64.RawURLEncoding.EncodeToString([]byte("invalid"))
+			},
+		},
+		{
+			name: "invalid auth key",
+			edit: func(body *pushSubscriptionRequest) {
+				body.Keys.Auth = base64.RawURLEncoding.EncodeToString([]byte("short"))
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := valid
+			test.edit(&body)
+			if err := validatePushSubscriptionKeys(body); err == nil {
+				t.Fatal("validatePushSubscriptionKeys() accepted invalid subscription")
+			}
+		})
+	}
+}
+
+func TestPushEligibleTicketRequiresActiveUnexpiredStatus(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	active := []string{"WAITING", "CALLED", "ARRIVED", "PREPARING", "READY"}
+	for _, status := range active {
+		if !pushEligibleTicket(status, now.Add(time.Minute), now) {
+			t.Errorf("pushEligibleTicket(%q) = false, want true", status)
+		}
+	}
+	for _, status := range []string{"SEATED", "NO_SHOW", "PICKED_UP", "CANCELLED", "EXPIRED"} {
+		if pushEligibleTicket(status, now.Add(time.Minute), now) {
+			t.Errorf("pushEligibleTicket(%q) = true, want false", status)
+		}
+	}
+	if pushEligibleTicket("WAITING", now, now) {
+		t.Fatal("pushEligibleTicket() accepted an expired ticket")
+	}
+}
+
 func TestRestaurantBusinessDateUsesRestaurantTimezone(t *testing.T) {
 	now := time.Date(2025, time.January, 1, 2, 0, 0, 0, time.UTC)
 	got, err := restaurantBusinessDate(now, "America/New_York")

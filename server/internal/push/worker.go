@@ -8,11 +8,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
+	mathrand "math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -20,16 +22,16 @@ import (
 
 const (
 	maxAttempts  = 6
-	batchSize    = 20
+	batchSize    = 4
 	workerPoll   = time.Second
 	jobLeaseTime = time.Minute
 )
 
 type Settings struct {
-	AppBaseURL        string
-	VAPIDPublicKey    string
-	VAPIDPrivateKey   string
-	VAPIDSubject      string
+	AppBaseURL         string
+	VAPIDPublicKey     string
+	VAPIDPrivateKey    string
+	VAPIDSubject       string
 	TokenEncryptionKey []byte
 }
 
@@ -44,6 +46,7 @@ type job struct {
 	ID                   string
 	RestaurantID         string
 	TicketID             string
+	LockedBy             string
 	Type                 string
 	Title                string
 	Body                 string
@@ -53,10 +56,10 @@ type job struct {
 }
 
 type target struct {
-	ID      string
+	ID       string
 	Endpoint string
-	P256dh  string
-	Auth    string
+	P256dh   string
+	Auth     string
 }
 
 type pushPayload struct {
@@ -87,18 +90,30 @@ func (worker *Worker) Run(ctx context.Context) {
 			}
 			worker.logger.ErrorContext(ctx, "claim push notification jobs", "error", err)
 		}
+		var deliveries sync.WaitGroup
 		for _, current := range claimed {
 			if ctx.Err() != nil {
-				return
+				break
 			}
-			if err := worker.deliver(ctx, current); err != nil {
-				worker.logger.ErrorContext(
-					ctx,
-					"process push notification job",
-					"notification_id", current.ID,
-					"error", err,
-				)
+			deliveries.Add(1)
+			go func(current job) {
+				defer deliveries.Done()
+				if err := worker.deliver(ctx, current); err != nil {
+					worker.logger.ErrorContext(
+						ctx,
+						"process push notification job",
+						"notification_id", current.ID,
+						"error", err,
+					)
+				}
+			}(current)
+		}
+		deliveries.Wait()
+		if ctx.Err() != nil {
+			if err := worker.releaseClaimed(claimed); err != nil {
+				worker.logger.Error("release push notification leases during shutdown", "error", err)
 			}
+			return
 		}
 		if len(claimed) > 0 {
 			continue
@@ -109,6 +124,23 @@ func (worker *Worker) Run(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+func (worker *Worker) releaseClaimed(claimed []job) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for _, current := range claimed {
+		if _, err := worker.db.ExecContext(ctx, `
+			UPDATE notifications
+			SET status = 'PENDING', next_attempt_at = now(),
+			    locked_at = NULL, locked_by = NULL, updated_at = now()
+			WHERE id = $1 AND status = 'PROCESSING' AND locked_by = $2
+		`, current.ID, current.LockedBy); err != nil {
+			return fmt.Errorf("release push notification %s: %w", current.ID, err)
+		}
+	}
+	return nil
 }
 
 func (worker *Worker) claim(ctx context.Context) ([]job, error) {
@@ -155,6 +187,7 @@ func (worker *Worker) claim(ctx context.Context) ([]job, error) {
 		FROM due
 		WHERE n.id = due.id
 		RETURNING n.id::text, n.restaurant_id::text, COALESCE(n.queue_ticket_id::text, ''),
+		          n.locked_by,
 		          n.type, n.title, n.body, n.idempotency_key,
 		          n.ticket_token_ciphertext, n.attempt_count
 	`, maxAttempts, int(jobLeaseTime.Seconds()), batchSize, instanceID)
@@ -170,6 +203,7 @@ func (worker *Worker) claim(ctx context.Context) ([]job, error) {
 			&current.ID,
 			&current.RestaurantID,
 			&current.TicketID,
+			&current.LockedBy,
 			&current.Type,
 			&current.Title,
 			&current.Body,
@@ -217,12 +251,40 @@ func (worker *Worker) deliver(ctx context.Context, current job) error {
 		return worker.finishWithoutRetry(ctx, current, "NO_ACTIVE_SUBSCRIPTIONS")
 	}
 
-	result := dispatchResult{}
+	type sendResult struct {
+		subscription target
+		attempt      deliveryAttempt
+	}
+	results := make(chan sendResult, len(targets))
 	for _, subscription := range targets {
-		attempt := worker.send(ctx, payload, subscription, current.IdempotencyKey)
-		if err := worker.recordAttempt(ctx, current, subscription, attempt); err != nil {
+		go func(subscription target) {
+			results <- sendResult{
+				subscription: subscription,
+				attempt: worker.send(
+					ctx,
+					payload,
+					subscription,
+					current.IdempotencyKey,
+				),
+			}
+		}(subscription)
+	}
+
+	result := dispatchResult{}
+	attempts := make([]sendResult, 0, len(targets))
+	for range targets {
+		attempts = append(attempts, <-results)
+	}
+	for _, sent := range attempts {
+		if err := worker.recordAttempt(
+			ctx,
+			current,
+			sent.subscription,
+			sent.attempt,
+		); err != nil {
 			return fmt.Errorf("record push delivery attempt: %w", err)
 		}
+		attempt := sent.attempt
 		switch attempt.outcome {
 		case "SENT":
 			result.sent++
@@ -261,9 +323,9 @@ type dispatchResult struct {
 }
 
 type deliveryAttempt struct {
-	outcome       string
+	outcome        string
 	responseStatus sql.NullInt64
-	errorCode     string
+	errorCode      string
 }
 
 func (worker *Worker) targets(ctx context.Context, current job) ([]target, error) {
@@ -315,9 +377,7 @@ func (worker *Worker) send(
 
 	endpoint, err := ValidateEndpoint(requestCtx, subscription.Endpoint, nil)
 	if err != nil {
-		if strings.Contains(err.Error(), "not publicly routable") ||
-			strings.Contains(err.Error(), "must be an HTTPS URL") ||
-			strings.Contains(err.Error(), "must use port 443") {
+		if errors.Is(err, ErrUnsafeEndpoint) || errors.Is(err, ErrInvalidEndpoint) {
 			return deliveryAttempt{outcome: "INVALID", errorCode: "ENDPOINT_REJECTED"}
 		}
 		return deliveryAttempt{outcome: "RETRY", errorCode: "ENDPOINT_RESOLUTION_FAILED"}
@@ -413,15 +473,21 @@ func (worker *Worker) recordAttempt(
 
 func (worker *Worker) scheduleRetry(ctx context.Context, current job, errorCode string) error {
 	delay := retryDelay(current.Attempt)
-	if _, err := worker.db.ExecContext(ctx, `
+	result, err := worker.db.ExecContext(ctx, `
 		UPDATE notifications
 		SET status = 'PENDING',
 		    next_attempt_at = now() + ($1 * interval '1 second'),
 		    locked_at = NULL, locked_by = NULL,
 		    last_error_code = $2, updated_at = now()
-		WHERE id = $3 AND status = 'PROCESSING'
-	`, delay.Seconds(), errorCode, current.ID); err != nil {
+		WHERE id = $3 AND status = 'PROCESSING' AND locked_by = $4
+	`, delay.Seconds(), errorCode, current.ID, current.LockedBy)
+	if err != nil {
 		return fmt.Errorf("schedule push notification retry: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("check scheduled push notification retry: %w", err)
+	} else if affected != 1 {
+		return fmt.Errorf("push notification retry lease is no longer held")
 	}
 	return nil
 }
@@ -444,16 +510,22 @@ func (worker *Worker) finish(
 	if errorCode != nil {
 		lastError = *errorCode
 	}
-	if _, err := worker.db.ExecContext(ctx, `
+	result, err := worker.db.ExecContext(ctx, `
 		UPDATE notifications
 		SET status = $1,
 		    sent_at = CASE WHEN $1 = 'SENT' THEN now() ELSE sent_at END,
 		    next_attempt_at = NULL,
 		    locked_at = NULL, locked_by = NULL,
 		    last_error_code = $2, updated_at = now()
-		WHERE id = $3 AND status = 'PROCESSING'
-	`, status, lastError, current.ID); err != nil {
+		WHERE id = $3 AND status = 'PROCESSING' AND locked_by = $4
+	`, status, lastError, current.ID, current.LockedBy)
+	if err != nil {
 		return fmt.Errorf("finish push notification job: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("check finished push notification job: %w", err)
+	} else if affected != 1 {
+		return fmt.Errorf("push notification lease is no longer held")
 	}
 	return nil
 }
@@ -482,7 +554,7 @@ func retryDelay(attempt int) time.Duration {
 	if jitterRange <= 0 {
 		return base
 	}
-	jitter := time.Duration(rand.Int63n(2*jitterRange+1) - jitterRange)
+	jitter := time.Duration(mathrand.Int63n(2*jitterRange+1) - jitterRange)
 	return base + jitter
 }
 

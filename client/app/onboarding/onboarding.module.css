@@ -300,6 +300,24 @@
   font-weight: 400;
 }
 
+.field input[type="file"] {
+  height: auto;
+  min-height: 52px;
+  padding: 10px;
+}
+
+.logoPreview {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logoImage {
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  object-fit: contain;
+}
+
 .field input:focus-visible,
 .field select:focus-visible {
   border-color: var(--foreground);

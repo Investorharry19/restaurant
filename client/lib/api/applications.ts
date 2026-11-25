@@ -28,8 +28,21 @@ export type BusinessApplication = {
   pickupQueueEnabled: boolean;
   status: ApplicationStatus;
   reviewNote: string | null;
+  logoUrl: string | null;
   createdAt: string;
   reviewedAt: string | null;
+};
+
+export type OwnerApplicationDraft = {
+  businessName: string;
+  businessType: BusinessType;
+  slug: string;
+  address: string | null;
+  phone: string | null;
+  tableQueueEnabled: boolean;
+  pickupQueueEnabled: boolean;
+  logoUrl: string | null;
+  reviewNote: string | null;
 };
 
 export type PlatformAdminSession = {
@@ -124,6 +137,7 @@ function decodeBusinessApplication(data: unknown): BusinessApplication {
     typeof data.pickupQueueEnabled !== "boolean" ||
     !isApplicationStatus(data.status) ||
     !isNullableString(data.reviewNote) ||
+    !isNullableString(data.logoUrl) ||
     !isDateString(data.createdAt) ||
     (data.reviewedAt !== null && !isDateString(data.reviewedAt))
   ) {
@@ -143,6 +157,7 @@ function decodeBusinessApplication(data: unknown): BusinessApplication {
     pickupQueueEnabled: data.pickupQueueEnabled,
     status: data.status,
     reviewNote: data.reviewNote,
+    logoUrl: data.logoUrl,
     createdAt: data.createdAt,
     reviewedAt: data.reviewedAt,
   };
@@ -156,6 +171,36 @@ export function decodeBusinessApplications(
   }
 
   return data.map(decodeBusinessApplication);
+}
+
+export function decodeOwnerApplicationDraft(
+  data: unknown,
+): OwnerApplicationDraft {
+  if (
+    !isRecord(data) ||
+    typeof data.businessName !== "string" ||
+    !isBusinessType(data.businessType) ||
+    typeof data.slug !== "string" ||
+    !isNullableString(data.address) ||
+    !isNullableString(data.phone) ||
+    typeof data.tableQueueEnabled !== "boolean" ||
+    typeof data.pickupQueueEnabled !== "boolean" ||
+    !isNullableString(data.logoUrl) ||
+    !isNullableString(data.reviewNote)
+  ) {
+    throw new TypeError("The rejected application response is invalid.");
+  }
+  return {
+    businessName: data.businessName,
+    businessType: data.businessType,
+    slug: data.slug,
+    address: data.address,
+    phone: data.phone,
+    tableQueueEnabled: data.tableQueueEnabled,
+    pickupQueueEnabled: data.pickupQueueEnabled,
+    logoUrl: data.logoUrl,
+    reviewNote: data.reviewNote,
+  };
 }
 
 export function decodePlatformAdminSession(

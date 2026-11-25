@@ -343,9 +343,21 @@ func (controller *ownerWorkspaceController) getQR(w http.ResponseWriter, r *http
 		writeMappedError(w, r, controller.logger, workspaceNotFound())
 		return
 	}
-	qr, err := qrcode.Encode(controller.guestURL(identity.restaurantSlug), qrcode.Medium, 1024)
+	qr, err := qrcode.Encode(controller.guestURL(identity.restaurantSlug), qrcode.High, 1024)
 	if err != nil {
 		writeMappedError(w, r, controller.logger, fmt.Errorf("generate restaurant QR code: %w", err))
+		return
+	}
+	var logoData []byte
+	if err := controller.db.QueryRowContext(r.Context(), `
+		SELECT logo_data FROM restaurants WHERE id = $1
+	`, identity.restaurantID).Scan(&logoData); err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("load restaurant logo for QR code: %w", err))
+		return
+	}
+	qr, err = addLogoToQRCode(qr, logoData)
+	if err != nil {
+		writeMappedError(w, r, controller.logger, err)
 		return
 	}
 	w.Header().Set("Cache-Control", "private, no-store")

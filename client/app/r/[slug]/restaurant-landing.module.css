@@ -12,8 +12,25 @@
 }
 
 .restaurantHeader {
+  display: flex;
+  align-items: center;
+  gap: 18px;
   padding-bottom: 28px;
   border-bottom: 1px solid var(--hairline);
+}
+
+.restaurantLogo {
+  width: 72px;
+  height: 72px;
+  flex: 0 0 72px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  object-fit: contain;
+}
+
+.restaurantIdentity {
+  min-width: 0;
 }
 
 .restaurantHeader h1 {

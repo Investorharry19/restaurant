@@ -74,6 +74,74 @@ paths:
           $ref: "#/components/responses/WorkspaceError"
         "429":
           $ref: "#/components/responses/WorkspaceError"
+  /api/public/push/vapid-key:
+    get:
+      operationId: getPublicPushVapidKey
+      summary: Read the public VAPID key for browser push subscriptions
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "503":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/public/tickets/{publicToken}/push-subscriptions:
+    put:
+      operationId: savePublicTicketPushSubscription
+      summary: Enable push notifications for a private ticket
+      parameters:
+        - name: publicToken
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{43}$"
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PushSubscriptionRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/WorkspaceError"
+        "409":
+          $ref: "#/components/responses/WorkspaceError"
+        "429":
+          $ref: "#/components/responses/WorkspaceError"
+        "503":
+          $ref: "#/components/responses/WorkspaceError"
+    delete:
+      operationId: deletePublicTicketPushSubscription
+      summary: Disable push notifications for a private ticket on this device
+      parameters:
+        - name: publicToken
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{43}$"
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint]
+              properties:
+                endpoint:
+                  type: string
+                  format: uri
+                  maxLength: 2048
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/WorkspaceError"
+        "429":
+          $ref: "#/components/responses/WorkspaceError"
   /api/staff/events:
     get:
       operationId: streamStaffEvents
@@ -333,6 +401,78 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+  /api/owner/applications/{statusToken}:
+    get:
+      operationId: getRejectedBusinessApplicationForEdit
+      summary: Read a rejected application owned by the current owner
+      security:
+        - OwnerSession: []
+      parameters:
+        - $ref: "#/components/parameters/ApplicationStatusToken"
+      responses:
+        "200":
+          description: The rejected application available to this owner.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerApplicationDraftEnvelope"
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+        "404":
+          $ref: "#/components/responses/WorkspaceError"
+    patch:
+      operationId: resubmitRejectedBusinessApplication
+      summary: Update and resubmit a rejected application owned by the current owner
+      security:
+        - OwnerSession: []
+      parameters:
+        - $ref: "#/components/parameters/ApplicationStatusToken"
+        - $ref: "#/components/parameters/BrowserMutationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBusinessApplicationRequest"
+      responses:
+        "200":
+          description: The updated application was resubmitted for review.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatedApplicationEnvelope"
+        "400":
+          $ref: "#/components/responses/WorkspaceError"
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+        "404":
+          $ref: "#/components/responses/WorkspaceError"
+        "409":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/owner/applications/{statusToken}/logo:
+    get:
+      operationId: getRejectedBusinessApplicationLogo
+      summary: Read the logo from a rejected application owned by the current owner
+      security:
+        - OwnerSession: []
+      parameters:
+        - $ref: "#/components/parameters/ApplicationStatusToken"
+      responses:
+        "200":
+          description: The stored PNG or JPEG logo.
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+        "404":
+          $ref: "#/components/responses/WorkspaceError"
   /api/public/applications/{statusToken}:
     get:
       operationId: getBusinessApplicationStatus
@@ -357,6 +497,41 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+  /api/public/restaurants/{slug}:
+    get:
+      operationId: getPublicRestaurant
+      summary: Read public restaurant details and available queue services
+      parameters:
+        - $ref: "#/components/parameters/RestaurantSlug"
+      responses:
+        "200":
+          description: Public restaurant details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicRestaurantEnvelope"
+        "404":
+          $ref: "#/components/responses/WorkspaceError"
+  /api/public/restaurants/{slug}/logo:
+    get:
+      operationId: getPublicRestaurantLogo
+      summary: Read a restaurant's public logo
+      parameters:
+        - $ref: "#/components/parameters/RestaurantSlug"
+      responses:
+        "200":
+          description: The public PNG or JPEG restaurant logo.
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/WorkspaceError"
         "429":
           description: Too many status checks were made.
           content:
@@ -956,6 +1131,35 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+  /api/platform/applications/{applicationID}/logo:
+    get:
+      operationId: getApplicationLogoForReview
+      summary: Read an application logo for an authenticated platform administrator
+      security:
+        - PlatformAdminSession: []
+      parameters:
+        - name: applicationID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The stored PNG or JPEG logo.
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/WorkspaceError"
+        "404":
+          $ref: "#/components/responses/WorkspaceError"
   /api/platform/applications/{applicationID}/approve:
     post:
       operationId: approveBusinessApplication
@@ -1073,6 +1277,20 @@ components:
       required: true
       schema:
         type: string
+    RestaurantSlug:
+      name: slug
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+    ApplicationStatusToken:
+      name: statusToken
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]{43}$"
   responses:
     WorkspaceResponse:
       description: The request succeeded.
@@ -1087,6 +1305,22 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    PushSubscriptionRequest:
+      type: object
+      required: [endpoint, keys]
+      properties:
+        endpoint:
+          type: string
+          format: uri
+          maxLength: 2048
+        keys:
+          type: object
+          required: [p256dh, auth]
+          properties:
+            p256dh:
+              type: string
+            auth:
+              type: string
     WorkspaceEnvelope:
       type: object
       required: [success, message, data]
@@ -1174,6 +1408,79 @@ components:
         reviewedAt:
           type: [string, "null"]
           format: date-time
+    PublicRestaurantEnvelope:
+      type: object
+      required: [success, message, data]
+      properties:
+        success:
+          const: true
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PublicRestaurant"
+    PublicRestaurant:
+      type: object
+      required: [name, description, logoUrl, isActive, enabledQueueTypes]
+      properties:
+        name:
+          type: string
+        description:
+          type: [string, "null"]
+        logoUrl:
+          type: [string, "null"]
+          format: uri-reference
+        isActive:
+          type: boolean
+        enabledQueueTypes:
+          type: array
+          items:
+            type: string
+            enum: [TABLE, PICKUP]
+    OwnerApplicationDraftEnvelope:
+      type: object
+      required: [success, message, data]
+      properties:
+        success:
+          const: true
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/OwnerApplicationDraft"
+    OwnerApplicationDraft:
+      type: object
+      required:
+        [
+          businessName,
+          businessType,
+          slug,
+          address,
+          phone,
+          tableQueueEnabled,
+          pickupQueueEnabled,
+          logoUrl,
+          reviewNote,
+        ]
+      properties:
+        businessName:
+          type: string
+        businessType:
+          type: string
+          enum: [RESTAURANT, BAKERY, EATERY]
+        slug:
+          type: string
+        address:
+          type: [string, "null"]
+        phone:
+          type: [string, "null"]
+        tableQueueEnabled:
+          type: boolean
+        pickupQueueEnabled:
+          type: boolean
+        logoUrl:
+          type: [string, "null"]
+          format: uri-reference
+        reviewNote:
+          type: [string, "null"]
     CreateBusinessApplicationRequest:
       type: object
       required:
@@ -1203,6 +1510,13 @@ components:
           type: boolean
         pickupQueueEnabled:
           type: boolean
+        logoBase64:
+          type: string
+          maxLength: 699052
+          description: Standard base64-encoded PNG/JPEG, up to 512 KiB before encoding.
+        logoContentType:
+          type: string
+          enum: [image/png, image/jpeg]
     OwnerAccountRegistrationRequest:
       type: object
       required: [name, email, password]
@@ -1324,6 +1638,7 @@ components:
         - pickupQueueEnabled
         - status
         - reviewNote
+        - logoUrl
         - createdAt
         - reviewedAt
       properties:
@@ -1355,6 +1670,9 @@ components:
           enum: [PENDING, APPROVED, REJECTED]
         reviewNote:
           type: [string, "null"]
+        logoUrl:
+          type: [string, "null"]
+          format: uri-reference
         createdAt:
           type: string
           format: date-time

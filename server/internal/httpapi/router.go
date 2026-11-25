@@ -9,6 +9,11 @@ import (
 	"restaurant/server/internal/realtime"
 )
 
+type PushSettings struct {
+	VAPIDPublicKey     string
+	TokenEncryptionKey []byte
+}
+
 func NewHandler(
 	db *sql.DB,
 	logger *slog.Logger,
@@ -79,6 +84,32 @@ func NewHandlerWithRealtime(
 	emailSender VerificationEmailSender,
 	eventHub *realtime.Hub,
 ) http.Handler {
+	return NewHandlerWithPush(
+		db,
+		logger,
+		allowedOrigins,
+		production,
+		sessionTTL,
+		sessionCookieDomain,
+		appBaseURL,
+		emailSender,
+		eventHub,
+		PushSettings{},
+	)
+}
+
+func NewHandlerWithPush(
+	db *sql.DB,
+	logger *slog.Logger,
+	allowedOrigins []string,
+	production bool,
+	sessionTTL time.Duration,
+	sessionCookieDomain string,
+	appBaseURL string,
+	emailSender VerificationEmailSender,
+	eventHub *realtime.Hub,
+	pushSettings PushSettings,
+) http.Handler {
 	if eventHub == nil {
 		eventHub = realtime.NewHub()
 	}
@@ -135,7 +166,10 @@ func NewHandlerWithRealtime(
 		postgresPublicRestaurantReader{db: db},
 		logger,
 	)
-	registerCustomerTicketRoutes(mux, newPublicTicketController(db, logger, eventHub))
+	registerCustomerTicketRoutes(
+		mux,
+		newPublicTicketController(db, logger, eventHub, pushSettings),
+	)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeMappedError(
 			w,

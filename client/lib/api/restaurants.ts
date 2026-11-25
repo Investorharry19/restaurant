@@ -3,6 +3,7 @@ export type PublicQueueType = "TABLE" | "PICKUP";
 export type PublicRestaurant = {
   name: string;
   description: string | null;
+  logoUrl: string | null;
   isActive: boolean;
   enabledQueueTypes: PublicQueueType[];
 };
@@ -21,6 +22,12 @@ export function decodePublicRestaurant(data: unknown): PublicRestaurant {
     typeof data.name !== "string" ||
     data.name.trim() === "" ||
     (typeof data.description !== "string" && data.description !== null) ||
+    (typeof data.logoUrl !== "string" &&
+      data.logoUrl !== null) ||
+    (typeof data.logoUrl === "string" &&
+      !/^\/api\/public\/restaurants\/[a-z0-9]+(?:-[a-z0-9]+)*\/logo$/.test(
+        data.logoUrl,
+      )) ||
     typeof data.isActive !== "boolean" ||
     !Array.isArray(data.enabledQueueTypes) ||
     !data.enabledQueueTypes.every(isPublicQueueType)
@@ -31,6 +38,7 @@ export function decodePublicRestaurant(data: unknown): PublicRestaurant {
   return {
     name: data.name,
     description: data.description,
+    logoUrl: data.logoUrl,
     isActive: data.isActive,
     enabledQueueTypes: data.enabledQueueTypes,
   };

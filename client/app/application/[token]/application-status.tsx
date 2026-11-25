@@ -140,6 +140,7 @@ export function ApplicationStatusPage({ token }: { token: string }) {
                 <>
                   <h2>This application was not approved.</h2>
                   <p>
+                    <strong>Reason for rejection: </strong>
                     {currentApplication.reviewNote ??
                       "There is no additional note for this decision."}
                   </p>
@@ -168,6 +169,13 @@ export function ApplicationStatusPage({ token }: { token: string }) {
                       </Link>
                     </>
                   )}
+                {currentApplication.status === "REJECTED" && (
+                  <Link
+                    href={`/onboarding?resubmit=${encodeURIComponent(token)}`}
+                  >
+                    Edit and resubmit
+                  </Link>
+                )}
                 <button
                   className={styles.refreshButton}
                   disabled={isLoading}

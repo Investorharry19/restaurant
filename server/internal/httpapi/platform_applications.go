@@ -45,6 +45,8 @@ type createBusinessApplicationRequest struct {
 	Phone              string `json:"phone"`
 	TableQueueEnabled  bool   `json:"tableQueueEnabled"`
 	PickupQueueEnabled bool   `json:"pickupQueueEnabled"`
+	LogoBase64         string `json:"logoBase64"`
+	LogoContentType    string `json:"logoContentType"`
 }
 
 type createBusinessApplicationResponse struct {
@@ -60,6 +62,18 @@ type publicApplicationStatus struct {
 	ReviewedAt     *time.Time `json:"reviewedAt"`
 }
 
+type ownerApplicationDraft struct {
+	BusinessName       string  `json:"businessName"`
+	BusinessType       string  `json:"businessType"`
+	Slug               string  `json:"slug"`
+	Address            *string `json:"address"`
+	Phone              *string `json:"phone"`
+	TableQueueEnabled  bool    `json:"tableQueueEnabled"`
+	PickupQueueEnabled bool    `json:"pickupQueueEnabled"`
+	LogoURL            *string `json:"logoUrl"`
+	ReviewNote         *string `json:"reviewNote"`
+}
+
 type businessApplicationSummary struct {
 	ID                 string     `json:"id"`
 	BusinessName       string     `json:"businessName"`
@@ -73,6 +87,7 @@ type businessApplicationSummary struct {
 	PickupQueueEnabled bool       `json:"pickupQueueEnabled"`
 	Status             string     `json:"status"`
 	ReviewNote         *string    `json:"reviewNote"`
+	LogoURL            *string    `json:"logoUrl"`
 	CreatedAt          time.Time  `json:"createdAt"`
 	ReviewedAt         *time.Time `json:"reviewedAt"`
 }
@@ -110,10 +125,26 @@ func registerPlatformApplicationRoutes(
 		"POST /api/owner/applications",
 		ownerAuth.requireOwner(http.HandlerFunc(public.create)),
 	)
+	mux.Handle(
+		"GET /api/owner/applications/{statusToken}",
+		ownerAuth.requireOwner(http.HandlerFunc(public.getRejectedDraft)),
+	)
+	mux.Handle(
+		"GET /api/owner/applications/{statusToken}/logo",
+		ownerAuth.requireOwner(http.HandlerFunc(public.getRejectedLogo)),
+	)
+	mux.Handle(
+		"PATCH /api/owner/applications/{statusToken}",
+		ownerAuth.requireOwner(http.HandlerFunc(public.resubmit)),
+	)
 	mux.HandleFunc("GET /api/public/applications/{statusToken}", public.status)
 	mux.Handle(
 		"GET /api/platform/applications",
 		auth.requireAdmin(http.HandlerFunc(platform.list)),
+	)
+	mux.Handle(
+		"GET /api/platform/applications/{applicationID}/logo",
+		auth.requireAdmin(http.HandlerFunc(platform.getApplicationLogo)),
 	)
 	mux.Handle(
 		"POST /api/platform/applications/{applicationID}/approve",
@@ -145,6 +176,11 @@ func (controller *publicApplicationController) create(w http.ResponseWriter, r *
 		writeMappedError(w, r, controller.logger, err)
 		return
 	}
+	logo, err := decodeRestaurantLogo(body.LogoBase64, body.LogoContentType)
+	if err != nil {
+		writeMappedError(w, r, controller.logger, err)
+		return
+	}
 	ip := requestIP(r)
 	if !controller.submitLimiter.allow(ip) ||
 		!controller.submitLimiter.allow(ip+"\x00"+owner.email) {
@@ -157,7 +193,7 @@ func (controller *publicApplicationController) create(w http.ResponseWriter, r *
 	}
 
 	var identityConflict bool
-	err := controller.db.QueryRowContext(r.Context(), `
+	err = controller.db.QueryRowContext(r.Context(), `
 		SELECT EXISTS (
 			SELECT 1 FROM restaurants WHERE lower(slug) = lower($1)
 			UNION ALL
@@ -188,13 +224,21 @@ func (controller *publicApplicationController) create(w http.ResponseWriter, r *
 	statusTokenHash := sha256.Sum256(statusTokenBytes)
 	clear(statusTokenBytes)
 
+	var logoData []byte
+	logoContentType := ""
+	if logo != nil {
+		logoData = logo.Data
+		logoContentType = logo.ContentType
+	}
 	_, err = controller.db.ExecContext(r.Context(), `
 		INSERT INTO restaurant_applications (
 			business_name, business_type, slug, address, phone, owner_user_id, owner_name,
-			owner_email, table_queue_enabled, pickup_queue_enabled, status_token_hash
+			owner_email, table_queue_enabled, pickup_queue_enabled, status_token_hash,
+			logo_data, logo_content_type
 		)
 		VALUES (
-			$1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, $9, $10, $11
+			$1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, $9, $10, $11, $12,
+			NULLIF($13, '')
 		)
 	`,
 		body.BusinessName,
@@ -208,6 +252,8 @@ func (controller *publicApplicationController) create(w http.ResponseWriter, r *
 		body.TableQueueEnabled,
 		body.PickupQueueEnabled,
 		statusTokenHash[:],
+		logoData,
+		logoContentType,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -233,28 +279,253 @@ func (controller *publicApplicationController) create(w http.ResponseWriter, r *
 	}
 }
 
+func (controller *publicApplicationController) getRejectedDraft(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	owner, ok := ownerIdentityFromContext(r.Context())
+	if !ok {
+		writeMappedError(w, r, controller.logger, unauthorizedOwner())
+		return
+	}
+	tokenHash, ok := applicationStatusTokenHash(r.PathValue("statusToken"))
+	if !ok {
+		writeMappedError(w, r, controller.logger, applicationNotFound())
+		return
+	}
+
+	var draft ownerApplicationDraft
+	var address, phone, reviewNote sql.NullString
+	var hasLogo bool
+	err := controller.db.QueryRowContext(r.Context(), `
+		SELECT business_name, business_type, slug, address, phone,
+		       table_queue_enabled, pickup_queue_enabled, logo_data IS NOT NULL, review_note
+		FROM restaurant_applications
+		WHERE status_token_hash = $1 AND owner_user_id = $2 AND status = 'REJECTED'
+	`, tokenHash[:], owner.id).Scan(
+		&draft.BusinessName,
+		&draft.BusinessType,
+		&draft.Slug,
+		&address,
+		&phone,
+		&draft.TableQueueEnabled,
+		&draft.PickupQueueEnabled,
+		&hasLogo,
+		&reviewNote,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeMappedError(w, r, controller.logger, applicationNotFound())
+		return
+	}
+	if err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("load rejected application for owner edit: %w", err))
+		return
+	}
+	draft.Address = nullableString(address)
+	draft.Phone = nullableString(phone)
+	draft.ReviewNote = nullableString(reviewNote)
+	if hasLogo {
+		logoURL := "/api/owner/applications/" + r.PathValue("statusToken") + "/logo"
+		draft.LogoURL = &logoURL
+	}
+	if err := writeSuccess(w, http.StatusOK, "Rejected application loaded for editing.", draft); err != nil {
+		loggerFromContext(r.Context(), controller.logger).ErrorContext(
+			r.Context(), "write owner application draft response", "error", err,
+		)
+	}
+}
+
+func (controller *publicApplicationController) getRejectedLogo(w http.ResponseWriter, r *http.Request) {
+	owner, ok := ownerIdentityFromContext(r.Context())
+	if !ok {
+		writeMappedError(w, r, controller.logger, unauthorizedOwner())
+		return
+	}
+	tokenHash, ok := applicationStatusTokenHash(r.PathValue("statusToken"))
+	if !ok {
+		writeMappedError(w, r, controller.logger, applicationNotFound())
+		return
+	}
+	var data []byte
+	var contentType string
+	err := controller.db.QueryRowContext(r.Context(), `
+		SELECT logo_data, logo_content_type
+		FROM restaurant_applications
+		WHERE status_token_hash = $1 AND owner_user_id = $2 AND status = 'REJECTED'
+	`, tokenHash[:], owner.id).Scan(&data, &contentType)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeMappedError(w, r, controller.logger, applicationNotFound())
+		return
+	}
+	if err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("load rejected application logo: %w", err))
+		return
+	}
+	writeRestaurantLogo(w, r, controller.logger, data, contentType, "private, no-store")
+}
+
+func (controller *publicApplicationController) resubmit(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !validateBrowserMutation(w, r, controller.logger) {
+		return
+	}
+	owner, ok := ownerIdentityFromContext(r.Context())
+	if !ok {
+		writeMappedError(w, r, controller.logger, unauthorizedOwner())
+		return
+	}
+	token := r.PathValue("statusToken")
+	tokenHash, ok := applicationStatusTokenHash(token)
+	if !ok {
+		writeMappedError(w, r, controller.logger, applicationNotFound())
+		return
+	}
+	var body createBusinessApplicationRequest
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeMappedError(w, r, controller.logger, err)
+		return
+	}
+	if err := normalizeAndValidateApplication(&body); err != nil {
+		writeMappedError(w, r, controller.logger, err)
+		return
+	}
+	logo, err := decodeRestaurantLogo(body.LogoBase64, body.LogoContentType)
+	if err != nil {
+		writeMappedError(w, r, controller.logger, err)
+		return
+	}
+	ip := requestIP(r)
+	if !controller.submitLimiter.allow(ip) ||
+		!controller.submitLimiter.allow(ip+"\x00"+owner.email) {
+		writeMappedError(w, r, controller.logger, &APIError{
+			Status:  http.StatusTooManyRequests,
+			Code:    "APPLICATION_RATE_LIMITED",
+			Message: "Too many applications were submitted. Try again later.",
+		})
+		return
+	}
+
+	tx, err := controller.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("begin application resubmission: %w", err))
+		return
+	}
+	defer tx.Rollback()
+
+	var applicationID string
+	err = tx.QueryRowContext(r.Context(), `
+		SELECT id::text
+		FROM restaurant_applications
+		WHERE status_token_hash = $1 AND owner_user_id = $2 AND status = 'REJECTED'
+		FOR UPDATE
+	`, tokenHash[:], owner.id).Scan(&applicationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeMappedError(w, r, controller.logger, applicationNotFound())
+		return
+	}
+	if err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("lock rejected application for resubmission: %w", err))
+		return
+	}
+
+	var identityConflict bool
+	err = tx.QueryRowContext(r.Context(), `
+		SELECT EXISTS (
+			SELECT 1 FROM restaurants WHERE lower(slug) = lower($1)
+		) OR EXISTS (
+			SELECT 1 FROM restaurant_applications
+			WHERE status = 'PENDING' AND id <> $2
+			  AND (lower(slug) = lower($1) OR lower(owner_email) = $3)
+		)
+	`, body.Slug, applicationID, owner.email).Scan(&identityConflict)
+	if err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("check resubmitted application uniqueness: %w", err))
+		return
+	}
+	if identityConflict {
+		writeMappedError(w, r, controller.logger, &APIError{
+			Status:  http.StatusConflict,
+			Code:    "APPLICATION_CONFLICT",
+			Message: "That business URL or owner email is already in use.",
+		})
+		return
+	}
+
+	var logoData []byte
+	logoContentType := ""
+	if logo != nil {
+		logoData = logo.Data
+		logoContentType = logo.ContentType
+	}
+	_, err = tx.ExecContext(r.Context(), `
+		UPDATE restaurant_applications
+		SET business_name = $1,
+		    business_type = $2,
+		    slug = $3,
+		    address = NULLIF($4, ''),
+		    phone = NULLIF($5, ''),
+		    table_queue_enabled = $6,
+		    pickup_queue_enabled = $7,
+		    logo_data = COALESCE($8, logo_data),
+		    logo_content_type = CASE WHEN $8 IS NULL THEN logo_content_type ELSE $9 END,
+		    status = 'PENDING',
+		    reviewed_by = NULL,
+		    reviewed_at = NULL,
+		    review_note = NULL
+		WHERE id = $10
+	`, body.BusinessName, body.BusinessType, body.Slug, body.Address, body.Phone,
+		body.TableQueueEnabled, body.PickupQueueEnabled, logoData, logoContentType, applicationID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeMappedError(w, r, controller.logger, &APIError{
+				Status:  http.StatusConflict,
+				Code:    "APPLICATION_CONFLICT",
+				Message: "That business URL or owner email is already in use.",
+			})
+			return
+		}
+		writeMappedError(w, r, controller.logger, fmt.Errorf("update rejected application for resubmission: %w", err))
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("commit application resubmission: %w", err))
+		return
+	}
+	if err := writeSuccess(w, http.StatusOK, "Updated application resubmitted.", createBusinessApplicationResponse{
+		StatusToken: token,
+	}); err != nil {
+		loggerFromContext(r.Context(), controller.logger).ErrorContext(
+			r.Context(), "write application resubmission response", "error", err,
+		)
+	}
+}
+
+func applicationStatusTokenHash(token string) ([32]byte, bool) {
+	if !applicationStatusPattern.MatchString(token) {
+		return [32]byte{}, false
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(decoded) != 32 {
+		clear(decoded)
+		return [32]byte{}, false
+	}
+	hash := sha256.Sum256(decoded)
+	clear(decoded)
+	return hash, true
+}
+
 func (controller *publicApplicationController) status(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	token := r.PathValue("statusToken")
-	if !applicationStatusPattern.MatchString(token) ||
-		!controller.statusLimiter.allow(requestIP(r)) {
+	tokenHash, ok := applicationStatusTokenHash(token)
+	if !ok || !controller.statusLimiter.allow(requestIP(r)) {
 		writeMappedError(w, r, controller.logger, applicationNotFound())
 		return
 	}
-	decodedToken, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil || len(decodedToken) != 32 {
-		clear(decodedToken)
-		writeMappedError(w, r, controller.logger, applicationNotFound())
-		return
-	}
-	tokenHash := sha256.Sum256(decodedToken)
-	clear(decodedToken)
 
 	var status publicApplicationStatus
 	var slug sql.NullString
 	var reviewNote sql.NullString
 	var reviewedAt sql.NullTime
-	err = controller.db.QueryRowContext(r.Context(), `
+	err := controller.db.QueryRowContext(r.Context(), `
 		SELECT business_name, status, slug, review_note, created_at, reviewed_at
 		FROM restaurant_applications
 		WHERE status_token_hash = $1
@@ -385,7 +656,7 @@ func (controller *platformApplicationController) list(w http.ResponseWriter, r *
 	rows, err := controller.db.QueryContext(r.Context(), `
 		SELECT id::text, business_name, business_type, slug, address, phone,
 		       owner_name, owner_email, table_queue_enabled, pickup_queue_enabled,
-		       status, review_note, created_at, reviewed_at
+		       status, review_note, logo_data IS NOT NULL, created_at, reviewed_at
 		FROM restaurant_applications
 		WHERE $1 = 'ALL' OR status = $1
 		ORDER BY created_at DESC, id DESC
@@ -401,6 +672,7 @@ func (controller *platformApplicationController) list(w http.ResponseWriter, r *
 	for rows.Next() {
 		var application businessApplicationSummary
 		var address, phone, reviewNote sql.NullString
+		var hasLogo bool
 		var reviewedAt sql.NullTime
 		if err := rows.Scan(
 			&application.ID,
@@ -415,6 +687,7 @@ func (controller *platformApplicationController) list(w http.ResponseWriter, r *
 			&application.PickupQueueEnabled,
 			&application.Status,
 			&reviewNote,
+			&hasLogo,
 			&application.CreatedAt,
 			&reviewedAt,
 		); err != nil {
@@ -424,6 +697,10 @@ func (controller *platformApplicationController) list(w http.ResponseWriter, r *
 		application.Address = nullableString(address)
 		application.Phone = nullableString(phone)
 		application.ReviewNote = nullableString(reviewNote)
+		if hasLogo {
+			logoURL := "/api/platform/applications/" + application.ID + "/logo"
+			application.LogoURL = &logoURL
+		}
 		if reviewedAt.Valid {
 			application.ReviewedAt = &reviewedAt.Time
 		}
@@ -440,6 +717,30 @@ func (controller *platformApplicationController) list(w http.ResponseWriter, r *
 			"error", err,
 		)
 	}
+}
+
+func (controller *platformApplicationController) getApplicationLogo(w http.ResponseWriter, r *http.Request) {
+	applicationID := r.PathValue("applicationID")
+	if !applicationIDPattern.MatchString(applicationID) {
+		writeMappedError(w, r, controller.logger, applicationNotFound())
+		return
+	}
+	var data []byte
+	var contentType string
+	err := controller.db.QueryRowContext(r.Context(), `
+		SELECT logo_data, logo_content_type
+		FROM restaurant_applications
+		WHERE id = $1 AND logo_data IS NOT NULL
+	`, applicationID).Scan(&data, &contentType)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeMappedError(w, r, controller.logger, applicationNotFound())
+		return
+	}
+	if err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("load application logo for review: %w", err))
+		return
+	}
+	writeRestaurantLogo(w, r, controller.logger, data, contentType, "private, no-store")
 }
 
 func (controller *platformApplicationController) approve(w http.ResponseWriter, r *http.Request) {
@@ -471,11 +772,15 @@ func (controller *platformApplicationController) approve(w http.ResponseWriter, 
 	}
 	var restaurantID string
 	if err := tx.QueryRowContext(r.Context(), `
-		INSERT INTO restaurants (name, slug, address, phone, table_queue_enabled, pickup_queue_enabled)
-		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6)
+		INSERT INTO restaurants (
+			name, slug, address, phone, table_queue_enabled, pickup_queue_enabled,
+			logo_data, logo_content_type
+		)
+		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6, $7, $8)
 		RETURNING id::text
 	`, application.BusinessName, application.Slug, application.Address, application.Phone,
-		application.TableQueueEnabled, application.PickupQueueEnabled).Scan(&restaurantID); err != nil {
+		application.TableQueueEnabled, application.PickupQueueEnabled, application.LogoData,
+		application.LogoContentType).Scan(&restaurantID); err != nil {
 		if isUniqueViolation(err) {
 			writeMappedError(w, r, controller.logger, applicationApprovalConflict())
 			return
@@ -582,7 +887,7 @@ func (controller *platformApplicationController) reject(w http.ResponseWriter, r
 		writeMappedError(w, r, controller.logger, &APIError{
 			Status:  http.StatusBadRequest,
 			Code:    "APPLICATION_REVIEW_NOTE_INVALID",
-			Message: "Add a review note of up to 1000 characters before declining.",
+			Message: "Add a reason for rejection of up to 1000 characters before declining.",
 		})
 		return
 	}
@@ -637,6 +942,8 @@ type pendingApplication struct {
 	OwnerPasswordHash  sql.NullString
 	TableQueueEnabled  bool
 	PickupQueueEnabled bool
+	LogoData           []byte
+	LogoContentType    sql.NullString
 }
 
 func loadPendingApplicationForUpdate(
@@ -649,7 +956,8 @@ func loadPendingApplicationForUpdate(
 	err := tx.QueryRowContext(ctx, `
 		SELECT business_name, slug, COALESCE(address, ''), COALESCE(phone, ''),
 		       owner_name, owner_email, owner_user_id, owner_password_hash,
-		       table_queue_enabled, pickup_queue_enabled, status
+		       table_queue_enabled, pickup_queue_enabled, status,
+		       logo_data, logo_content_type
 		FROM restaurant_applications
 		WHERE id = $1
 		FOR UPDATE
@@ -665,6 +973,8 @@ func loadPendingApplicationForUpdate(
 		&application.TableQueueEnabled,
 		&application.PickupQueueEnabled,
 		&status,
+		&application.LogoData,
+		&application.LogoContentType,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return pendingApplication{}, applicationNotFound()

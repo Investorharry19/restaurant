@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"restaurant/server/internal/push"
 	"restaurant/server/internal/realtime"
 )
 
@@ -31,6 +34,7 @@ type publicTicketController struct {
 	logger   *slog.Logger
 	limiter  *rateLimiter
 	eventHub *realtime.Hub
+	push     PushSettings
 }
 
 type createCustomerTicketRequest struct {
@@ -63,12 +67,18 @@ type publicTicketStatus struct {
 	ExpiresAt       time.Time `json:"expiresAt"`
 }
 
-func newPublicTicketController(db *sql.DB, logger *slog.Logger, eventHub *realtime.Hub) *publicTicketController {
+func newPublicTicketController(
+	db *sql.DB,
+	logger *slog.Logger,
+	eventHub *realtime.Hub,
+	pushSettings PushSettings,
+) *publicTicketController {
 	return &publicTicketController{
 		db:       db,
 		logger:   logger,
 		limiter:  newRateLimiter(12, time.Minute),
 		eventHub: eventHub,
+		push:     pushSettings,
 	}
 }
 
@@ -77,8 +87,293 @@ func registerCustomerTicketRoutes(mux *http.ServeMux, controller *publicTicketCo
 		"POST /api/public/restaurants/{slug}/queue-tickets",
 		controller.createTicket,
 	)
+	mux.HandleFunc("GET /api/public/push/vapid-key", controller.getPushVAPIDKey)
 	mux.HandleFunc("GET /api/public/tickets/{publicToken}", controller.getTicket)
 	mux.HandleFunc("GET /api/public/tickets/{publicToken}/events", controller.ticketEvents)
+	mux.HandleFunc("PUT /api/public/tickets/{publicToken}/push-subscriptions", controller.savePushSubscription)
+	mux.HandleFunc("DELETE /api/public/tickets/{publicToken}/push-subscriptions", controller.deletePushSubscription)
+}
+
+type pushSubscriptionRequest struct {
+	Endpoint string `json:"endpoint"`
+	Keys     struct {
+		P256dh string `json:"p256dh"`
+		Auth   string `json:"auth"`
+	} `json:"keys"`
+}
+
+func (controller *publicTicketController) getPushVAPIDKey(w http.ResponseWriter, r *http.Request) {
+	if controller.push.VAPIDPublicKey == "" {
+		writeMappedError(w, r, controller.logger, &APIError{
+			Status:  http.StatusServiceUnavailable,
+			Code:    "PUSH_UNAVAILABLE",
+			Message: "Push notifications are not configured for this service.",
+		})
+		return
+	}
+	if err := writeSuccess(w, http.StatusOK, "Push key loaded.", map[string]string{
+		"publicKey": controller.push.VAPIDPublicKey,
+	}); err != nil {
+		loggerFromContext(r.Context(), controller.logger).ErrorContext(
+			r.Context(), "write public VAPID key response", "error", err,
+		)
+	}
+}
+
+func (controller *publicTicketController) savePushSubscription(w http.ResponseWriter, r *http.Request) {
+	setPrivateTicketHeaders(w)
+	if !validateBrowserMutation(w, r, controller.logger) {
+		return
+	}
+	if controller.push.VAPIDPublicKey == "" || len(controller.push.TokenEncryptionKey) != 32 {
+		writeMappedError(w, r, controller.logger, pushUnavailable())
+		return
+	}
+	if !controller.limiter.allow(requestIP(r)) {
+		writeMappedError(w, r, controller.logger, &APIError{
+			Status:  http.StatusTooManyRequests,
+			Code:    "TICKET_RATE_LIMITED",
+			Message: "Too many ticket updates. Try again later.",
+		})
+		return
+	}
+	tokenString := r.PathValue("publicToken")
+	tokenHash, ok := publicTicketTokenHash(tokenString)
+	if !ok {
+		writeMappedError(w, r, controller.logger, ticketNotFound())
+		return
+	}
+	var body pushSubscriptionRequest
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeMappedError(w, r, controller.logger, err)
+		return
+	}
+	if err := validatePushSubscriptionKeys(body); err != nil {
+		writeMappedError(w, r, controller.logger, err)
+		return
+	}
+	resolveCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := push.ValidateEndpoint(resolveCtx, body.Endpoint, nil); err != nil {
+		writeMappedError(w, r, controller.logger, invalidPushSubscription())
+		return
+	}
+	endpointHash := sha256.Sum256([]byte(body.Endpoint))
+	encryptedToken, err := push.EncryptTicketToken(
+		controller.push.TokenEncryptionKey,
+		tokenString,
+	)
+	if err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("encrypt push ticket token: %w", err))
+		return
+	}
+
+	tx, err := controller.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("begin push subscription save: %w", err))
+		return
+	}
+	defer tx.Rollback()
+
+	var restaurantID string
+	var customerSessionID string
+	var status string
+	var expiresAt time.Time
+	err = tx.QueryRowContext(r.Context(), `
+		SELECT restaurant_id::text, customer_session_id::text, status, expires_at
+		FROM queue_tickets
+		WHERE public_token_hash = $1
+		FOR UPDATE
+	`, tokenHash[:]).Scan(&restaurantID, &customerSessionID, &status, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeMappedError(w, r, controller.logger, ticketNotFound())
+		return
+	}
+	if err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("load ticket for push subscription: %w", err))
+		return
+	}
+	if !pushEligibleTicket(status, expiresAt, time.Now()) {
+		writeMappedError(w, r, controller.logger, pushTicketInactive())
+		return
+	}
+	var lockedSessionID string
+	if err := tx.QueryRowContext(r.Context(), `
+		SELECT id::text FROM customer_sessions WHERE id = $1 FOR UPDATE
+	`, customerSessionID).Scan(&lockedSessionID); err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("lock customer session for push subscription: %w", err))
+		return
+	}
+	var existing bool
+	if err := tx.QueryRowContext(r.Context(), `
+		SELECT EXISTS (
+			SELECT 1 FROM push_subscriptions
+			WHERE endpoint_hash = $1 AND queue_ticket_id = (
+				SELECT id FROM queue_tickets WHERE public_token_hash = $2
+			) AND is_active
+		)
+	`, endpointHash[:], tokenHash[:]).Scan(&existing); err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("check existing push subscription: %w", err))
+		return
+	}
+	if !existing {
+		var activeCount int
+		if err := tx.QueryRowContext(r.Context(), `
+			SELECT count(*) FROM push_subscriptions
+			WHERE customer_session_id = $1 AND is_active
+		`, customerSessionID).Scan(&activeCount); err != nil {
+			writeMappedError(w, r, controller.logger, fmt.Errorf("count customer push subscriptions: %w", err))
+			return
+		}
+		if activeCount >= 10 {
+			writeMappedError(w, r, controller.logger, &APIError{
+				Status:  http.StatusConflict,
+				Code:    "PUSH_SUBSCRIPTION_LIMIT",
+				Message: "This ticket has reached its device notification limit.",
+			})
+			return
+		}
+	}
+
+	if _, err := tx.ExecContext(r.Context(), `
+		INSERT INTO push_subscriptions (
+			restaurant_id, customer_session_id, queue_ticket_id,
+			endpoint, endpoint_hash, p256dh, auth, encrypted_ticket_token
+		)
+		SELECT $1, $2, t.id, $4, $5, $6, $7, $8
+		FROM queue_tickets t
+		WHERE t.public_token_hash = $3
+		ON CONFLICT (endpoint_hash, queue_ticket_id) DO UPDATE
+		SET endpoint = EXCLUDED.endpoint,
+		    customer_session_id = EXCLUDED.customer_session_id,
+		    p256dh = EXCLUDED.p256dh,
+		    auth = EXCLUDED.auth,
+		    encrypted_ticket_token = EXCLUDED.encrypted_ticket_token,
+		    is_active = true,
+		    updated_at = now()
+	`, restaurantID, customerSessionID, tokenHash[:], body.Endpoint, endpointHash[:],
+		body.Keys.P256dh, body.Keys.Auth, encryptedToken); err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("save push subscription: %w", err))
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("commit push subscription: %w", err))
+		return
+	}
+	if err := writeSuccess(w, http.StatusOK, "Push notifications enabled for this ticket.", struct{}{}); err != nil {
+		loggerFromContext(r.Context(), controller.logger).ErrorContext(
+			r.Context(), "write push subscription response", "error", err,
+		)
+	}
+}
+
+func (controller *publicTicketController) deletePushSubscription(w http.ResponseWriter, r *http.Request) {
+	setPrivateTicketHeaders(w)
+	if !validateBrowserMutation(w, r, controller.logger) {
+		return
+	}
+	if !controller.limiter.allow(requestIP(r)) {
+		writeMappedError(w, r, controller.logger, &APIError{
+			Status:  http.StatusTooManyRequests,
+			Code:    "TICKET_RATE_LIMITED",
+			Message: "Too many ticket updates. Try again later.",
+		})
+		return
+	}
+	tokenHash, ok := publicTicketTokenHash(r.PathValue("publicToken"))
+	if !ok {
+		writeMappedError(w, r, controller.logger, ticketNotFound())
+		return
+	}
+	var body struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeMappedError(w, r, controller.logger, err)
+		return
+	}
+	if len(body.Endpoint) == 0 || len(body.Endpoint) > 2048 {
+		writeMappedError(w, r, controller.logger, invalidPushSubscription())
+		return
+	}
+	endpointHash := sha256.Sum256([]byte(body.Endpoint))
+	result, err := controller.db.ExecContext(r.Context(), `
+		DELETE FROM push_subscriptions s
+		USING queue_tickets t
+		WHERE s.queue_ticket_id = t.id
+		  AND s.restaurant_id = t.restaurant_id
+		  AND s.customer_session_id = t.customer_session_id
+		  AND s.endpoint_hash = $1
+		  AND t.public_token_hash = $2
+		  AND s.is_active
+	`, endpointHash[:], tokenHash[:])
+	if err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("delete push subscription: %w", err))
+		return
+	}
+	if _, err := result.RowsAffected(); err != nil {
+		writeMappedError(w, r, controller.logger, fmt.Errorf("check push subscription deletion: %w", err))
+		return
+	}
+	if err := writeSuccess(w, http.StatusOK, "Push notifications disabled for this ticket.", struct{}{}); err != nil {
+		loggerFromContext(r.Context(), controller.logger).ErrorContext(
+			r.Context(), "write push subscription deletion response", "error", err,
+		)
+	}
+}
+
+func validatePushSubscriptionKeys(body pushSubscriptionRequest) error {
+	parsed, err := url.ParseRequestURI(body.Endpoint)
+	if len(body.Endpoint) == 0 || len(body.Endpoint) > 2048 ||
+		err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" ||
+		parsed.User != nil || parsed.Fragment != "" ||
+		(parsed.Port() != "" && parsed.Port() != "443") {
+		return invalidPushSubscription()
+	}
+	publicKey, publicErr := base64.RawURLEncoding.DecodeString(body.Keys.P256dh)
+	authKey, authErr := base64.RawURLEncoding.DecodeString(body.Keys.Auth)
+	if len(body.Endpoint) == 0 || len(body.Endpoint) > 2048 ||
+		publicErr != nil || len(publicKey) != 65 || publicKey[0] != 4 ||
+		authErr != nil || len(authKey) != 16 {
+		return invalidPushSubscription()
+	}
+	return nil
+}
+
+func pushEligibleTicket(status string, expiresAt, now time.Time) bool {
+	if !expiresAt.After(now) {
+		return false
+	}
+	switch status {
+	case "WAITING", "CALLED", "ARRIVED", "PREPARING", "READY":
+		return true
+	default:
+		return false
+	}
+}
+
+func pushUnavailable() *APIError {
+	return &APIError{
+		Status:  http.StatusServiceUnavailable,
+		Code:    "PUSH_UNAVAILABLE",
+		Message: "Push notifications are not configured for this service.",
+	}
+}
+
+func invalidPushSubscription() *APIError {
+	return &APIError{
+		Status:  http.StatusBadRequest,
+		Code:    "PUSH_SUBSCRIPTION_INVALID",
+		Message: "The browser push subscription is invalid or unavailable.",
+	}
+}
+
+func pushTicketInactive() *APIError {
+	return &APIError{
+		Status:  http.StatusConflict,
+		Code:    "PUSH_TICKET_INACTIVE",
+		Message: "Push notifications can only be enabled for an active ticket.",
+	}
 }
 
 func (controller *publicTicketController) createTicket(w http.ResponseWriter, r *http.Request) {

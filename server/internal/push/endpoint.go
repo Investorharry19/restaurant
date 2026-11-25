@@ -2,6 +2,7 @@ package push
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,6 +13,11 @@ import (
 type Resolver interface {
 	LookupIPAddr(context.Context, string) ([]net.IPAddr, error)
 }
+
+var (
+	ErrInvalidEndpoint = errors.New("invalid push endpoint")
+	ErrUnsafeEndpoint  = errors.New("unsafe push endpoint")
+)
 
 var nonPublicNetworks = parseNetworks([]string{
 	"0.0.0.0/8",
@@ -51,15 +57,15 @@ func parseNetworks(networks []string) []*net.IPNet {
 
 func ValidateEndpoint(ctx context.Context, endpoint string, resolver Resolver) (*url.URL, error) {
 	if len(endpoint) == 0 || len(endpoint) > 2048 {
-		return nil, fmt.Errorf("push endpoint length is invalid")
+		return nil, fmt.Errorf("%w: length is invalid", ErrInvalidEndpoint)
 	}
 	parsed, err := url.ParseRequestURI(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" ||
 		parsed.User != nil || parsed.Fragment != "" {
-		return nil, fmt.Errorf("push endpoint must be an HTTPS URL without credentials or fragment")
+		return nil, fmt.Errorf("%w: must be an HTTPS URL without credentials or fragment", ErrInvalidEndpoint)
 	}
 	if port := parsed.Port(); port != "" && port != "443" {
-		return nil, fmt.Errorf("push endpoint must use port 443")
+		return nil, fmt.Errorf("%w: must use port 443", ErrInvalidEndpoint)
 	}
 	if resolver == nil {
 		resolver = net.DefaultResolver
@@ -73,7 +79,7 @@ func ValidateEndpoint(ctx context.Context, endpoint string, resolver Resolver) (
 func validateHostAddresses(ctx context.Context, host string, resolver Resolver) error {
 	if ip := net.ParseIP(host); ip != nil {
 		if !isPublicAddress(ip) {
-			return fmt.Errorf("push endpoint host is not publicly routable")
+			return fmt.Errorf("%w: host is not publicly routable", ErrUnsafeEndpoint)
 		}
 		return nil
 	}
@@ -82,11 +88,11 @@ func validateHostAddresses(ctx context.Context, host string, resolver Resolver) 
 		return fmt.Errorf("resolve push endpoint host")
 	}
 	if len(addresses) == 0 {
-		return fmt.Errorf("push endpoint host has no addresses")
+		return fmt.Errorf("%w: host has no addresses", ErrUnsafeEndpoint)
 	}
 	for _, address := range addresses {
 		if !isPublicAddress(address.IP) {
-			return fmt.Errorf("push endpoint host is not publicly routable")
+			return fmt.Errorf("%w: host is not publicly routable", ErrUnsafeEndpoint)
 		}
 	}
 	return nil
@@ -121,7 +127,7 @@ func (transport *PublicEndpointTransport) DialContext(
 		return nil, fmt.Errorf("invalid push endpoint address")
 	}
 	if port != "443" {
-		return nil, fmt.Errorf("push endpoint must use port 443")
+		return nil, fmt.Errorf("%w: must use port 443", ErrInvalidEndpoint)
 	}
 	resolver := transport.Resolver
 	if resolver == nil {
@@ -135,7 +141,7 @@ func (transport *PublicEndpointTransport) DialContext(
 
 	if ip := net.ParseIP(host); ip != nil {
 		if !isPublicAddress(ip) {
-			return nil, fmt.Errorf("push endpoint host is not publicly routable")
+			return nil, fmt.Errorf("%w: host is not publicly routable", ErrUnsafeEndpoint)
 		}
 		return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 	}
@@ -145,11 +151,11 @@ func (transport *PublicEndpointTransport) DialContext(
 		return nil, fmt.Errorf("resolve push endpoint host")
 	}
 	if len(addresses) == 0 {
-		return nil, fmt.Errorf("push endpoint host has no addresses")
+		return nil, fmt.Errorf("%w: host has no addresses", ErrUnsafeEndpoint)
 	}
 	for _, candidate := range addresses {
 		if !isPublicAddress(candidate.IP) {
-			return nil, fmt.Errorf("push endpoint host is not publicly routable")
+			return nil, fmt.Errorf("%w: host is not publicly routable", ErrUnsafeEndpoint)
 		}
 	}
 

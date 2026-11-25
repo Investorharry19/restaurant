@@ -3,6 +3,7 @@ import {
   decodeBusinessApplications,
   decodeCreatedApplication,
   decodeOwnerAccountSession,
+  decodeOwnerApplicationDraft,
   decodePublicApplicationStatus,
 } from "./applications";
 
@@ -23,6 +24,29 @@ describe("application API decoders", () => {
     expect(() =>
       decodeOwnerAccountSession({ name: "", email: "alex@example.com" }),
     ).toThrow("The owner account response is invalid.");
+  });
+
+  it("decodes a rejected application draft for owner resubmission", () => {
+    expect(
+      decodeOwnerApplicationDraft({
+        businessName: "Sample Restaurant",
+        businessType: "RESTAURANT",
+        slug: "sample-restaurant",
+        address: null,
+        phone: null,
+        tableQueueEnabled: true,
+        pickupQueueEnabled: false,
+        logoUrl: "/api/owner/applications/token/logo",
+        reviewNote: "Please add the street number.",
+      }),
+    ).toMatchObject({
+      businessName: "Sample Restaurant",
+      logoUrl: "/api/owner/applications/token/logo",
+      reviewNote: "Please add the street number.",
+    });
+    expect(() => decodeOwnerApplicationDraft({})).toThrow(
+      "The rejected application response is invalid.",
+    );
   });
 
   it("rejects malformed or incomplete application responses", () => {
@@ -76,6 +100,7 @@ describe("application API decoders", () => {
           pickupQueueEnabled: false,
           status: "PENDING",
           reviewNote: null,
+          logoUrl: null,
           createdAt,
           reviewedAt: null,
         },

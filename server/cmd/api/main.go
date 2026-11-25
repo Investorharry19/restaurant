@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"restaurant/server/internal/config"
 	"restaurant/server/internal/database"
 	"restaurant/server/internal/httpapi"
+	"restaurant/server/internal/push"
 	"restaurant/server/internal/realtime"
 )
 
@@ -44,7 +46,7 @@ func run() error {
 	eventHub := realtime.NewHub()
 	server := &http.Server{
 		Addr: cfg.HTTPAddr,
-		Handler: httpapi.NewHandlerWithRealtime(
+		Handler: httpapi.NewHandlerWithPush(
 			db,
 			logger,
 			cfg.CORSOrigins,
@@ -54,6 +56,10 @@ func run() error {
 			cfg.AppBaseURL,
 			httpapi.NewResendVerificationEmailSender(cfg.ResendAPIKey, cfg.ResendFromEmail),
 			eventHub,
+			httpapi.PushSettings{
+				VAPIDPublicKey:     cfg.VAPIDPublicKey,
+				TokenEncryptionKey: cfg.PushEncryptionKey,
+			},
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -72,14 +78,28 @@ func run() error {
 	}
 
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	publisherDone := make(chan struct{})
+	var workers sync.WaitGroup
+	workers.Add(1)
 	go func() {
-		defer close(publisherDone)
+		defer workers.Done()
 		realtime.NewPublisher(db, logger, eventHub).Run(signalCtx)
 	}()
+	if cfg.VAPIDPrivateKey != "" {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			push.NewWorker(db, logger, push.Settings{
+				AppBaseURL:         cfg.AppBaseURL,
+				VAPIDPublicKey:     cfg.VAPIDPublicKey,
+				VAPIDPrivateKey:    cfg.VAPIDPrivateKey,
+				VAPIDSubject:       cfg.VAPIDSubject,
+				TokenEncryptionKey: cfg.PushEncryptionKey,
+			}).Run(signalCtx)
+		}()
+	}
 	defer func() {
 		stop()
-		<-publisherDone
+		workers.Wait()
 	}()
 
 	serveErrors := make(chan error, 1)

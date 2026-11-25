@@ -298,6 +298,20 @@ func (controller *ownerWorkspaceController) updateTableTicket(w http.ResponseWri
 		writeMappedError(w, r, controller.logger, err)
 		return
 	}
+	if body.Status == "CALLED" {
+		if err := enqueueReadyPushNotification(
+			r.Context(),
+			tx,
+			identity.restaurantID,
+			r.PathValue("ticketID"),
+			"TABLE_CALLED",
+			"Your party has been called",
+			"Please return to the host stand.",
+		); err != nil {
+			writeMappedError(w, r, controller.logger, err)
+			return
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		writeMappedError(w, r, controller.logger, fmt.Errorf("commit table queue update: %w", err))
 		return
@@ -410,6 +424,18 @@ func (controller *ownerWorkspaceController) claimNextTableTicket(
 		ticketID,
 		"queue.ticket.updated",
 		map[string]any{"ticketNumber": ticketNumber, "status": "CALLED"},
+	); err != nil {
+		writeMappedError(w, r, controller.logger, err)
+		return
+	}
+	if err := enqueueReadyPushNotification(
+		r.Context(),
+		tx,
+		identity.restaurantID,
+		ticketID,
+		"TABLE_CALLED",
+		"Your party has been called",
+		"Please return to the host stand.",
 	); err != nil {
 		writeMappedError(w, r, controller.logger, err)
 		return

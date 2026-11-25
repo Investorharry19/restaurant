@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/elliptic"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +37,18 @@ func TestParseRequiresTLSInProduction(t *testing.T) {
 	}
 }
 
+func TestParseRequiresHTTPSAppBaseInProduction(t *testing.T) {
+	values := validEnvironment()
+	values["APP_ENV"] = "production"
+	values["TLS_CERT_FILE"] = "server.crt"
+	values["TLS_KEY_FILE"] = "server.key"
+
+	_, err := Parse(lookup(values))
+	if err == nil || !strings.Contains(err.Error(), "APP_BASE_URL must use HTTPS") {
+		t.Fatalf("Parse() error = %v, want production APP_BASE_URL HTTPS validation", err)
+	}
+}
+
 func TestParseAcceptsValidDevelopmentConfiguration(t *testing.T) {
 	config, err := Parse(lookup(validEnvironment()))
 	if err != nil {
@@ -48,6 +62,42 @@ func TestParseAcceptsValidDevelopmentConfiguration(t *testing.T) {
 	}
 	if config.SessionTTL != 24*time.Hour {
 		t.Fatalf("SessionTTL = %s, want 24h", config.SessionTTL)
+	}
+}
+
+func TestParseValidatesPushSettingsAsAnOptionalGroup(t *testing.T) {
+	values := validEnvironment()
+	values["VAPID_PUBLIC_KEY"] = "partial"
+	if _, err := Parse(lookup(values)); err == nil {
+		t.Fatal("Parse() accepted partial push configuration")
+	}
+
+	privateKey := make([]byte, 32)
+	privateKey[len(privateKey)-1] = 1
+	values = validEnvironment()
+	values["VAPID_PUBLIC_KEY"] = base64.RawURLEncoding.EncodeToString(
+		elliptic.Marshal(
+			elliptic.P256(),
+			elliptic.P256().Params().Gx,
+			elliptic.P256().Params().Gy,
+		),
+	)
+	values["VAPID_PRIVATE_KEY"] = base64.RawURLEncoding.EncodeToString(privateKey)
+	values["VAPID_SUBJECT"] = "mailto:push@example.com"
+	values["PUSH_TOKEN_ENCRYPTION_KEY"] = base64.StdEncoding.EncodeToString(
+		[]byte("0123456789abcdef0123456789abcdef"),
+	)
+	config, err := Parse(lookup(values))
+	if err != nil {
+		t.Fatalf("Parse() rejected valid push configuration: %v", err)
+	}
+	if len(config.PushEncryptionKey) != 32 {
+		t.Fatalf("push encryption key length = %d, want 32", len(config.PushEncryptionKey))
+	}
+
+	values["PUSH_TOKEN_ENCRYPTION_KEY"] = "not-a-32-byte-key"
+	if _, err := Parse(lookup(values)); err == nil {
+		t.Fatal("Parse() accepted an invalid push encryption key")
 	}
 }
 

@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
@@ -415,12 +416,24 @@ export function PlatformApplications() {
               {applications.map((application) => (
                 <li className={styles.application} key={application.id}>
                   <div className={styles.applicationHeading}>
-                    <div>
-                      <h2>{application.businessName}</h2>
-                      <p>
-                        {application.businessType.toLowerCase()} ·{" "}
-                        <code>/r/{application.slug}</code>
-                      </p>
+                    <div className={styles.applicationIdentity}>
+                      {application.logoUrl && (
+                        <Image
+                          alt={`${application.businessName} logo`}
+                          className={styles.applicationLogo}
+                          height={64}
+                          src={application.logoUrl}
+                          unoptimized
+                          width={64}
+                        />
+                      )}
+                      <div>
+                        <h2>{application.businessName}</h2>
+                        <p>
+                          {application.businessType.toLowerCase()} ·{" "}
+                          <code>/r/{application.slug}</code>
+                        </p>
+                      </div>
                     </div>
                     <span
                       className={styles.status}
@@ -502,7 +515,10 @@ export function PlatformApplications() {
                           onSubmit={(event) => void reject(event, application)}
                         >
                           <label className={styles.field}>
-                            <span>Note for the applicant</span>
+                            <span>
+                              Reason for rejection — tell the owner what to
+                              change
+                            </span>
                             <textarea
                               maxLength={1000}
                               minLength={1}
@@ -519,7 +535,7 @@ export function PlatformApplications() {
                             >
                               {actionPendingID === application.id
                                 ? "Saving…"
-                                : "Confirm decline"}
+                                : "Reject and send feedback"}
                             </button>
                             <button
                               className={styles.textButton}

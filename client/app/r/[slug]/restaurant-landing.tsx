@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, apiRequest } from "../../../lib/api/client";
@@ -208,12 +209,24 @@ export function RestaurantLanding({ slug }: { slug: string }) {
     <main className={styles.page}>
       <div className={styles.shell}>
         <header className={styles.restaurantHeader}>
-          <h1>{restaurant.name}</h1>
-          {restaurant.description && (
-            <p className={styles.restaurantDescription}>
-              {restaurant.description}
-            </p>
+          {restaurant.logoUrl && (
+            <Image
+              alt={`${restaurant.name} logo`}
+              className={styles.restaurantLogo}
+              height={72}
+              src={restaurant.logoUrl}
+              unoptimized
+              width={72}
+            />
           )}
+          <div className={styles.restaurantIdentity}>
+            <h1>{restaurant.name}</h1>
+            {restaurant.description && (
+              <p className={styles.restaurantDescription}>
+                {restaurant.description}
+              </p>
+            )}
+          </div>
         </header>
 
         <section className={styles.choiceSection}>

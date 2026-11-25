@@ -149,6 +149,37 @@
   line-height: 1.5;
 }
 
+.pushPreference {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 18px 0;
+  border-top: 1px solid var(--hairline-soft);
+}
+
+.pushPreference h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.pushPreference p {
+  max-width: 52ch;
+  margin: 0;
+  color: var(--body);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.pushPreference .refreshButton {
+  margin-top: 2px;
+}
+
+.pushWarning {
+  color: #b32505 !important;
+}
+
 .ticketFooter {
   display: flex;
   align-items: center;

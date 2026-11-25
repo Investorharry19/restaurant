@@ -354,6 +354,20 @@ func (controller *staffAuthController) updateOrderStatus(w http.ResponseWriter, 
 		writeMappedError(w, r, controller.logger, err)
 		return
 	}
+	if body.Status == "READY" && ticketID != "" {
+		if err := enqueueReadyPushNotification(
+			r.Context(),
+			tx,
+			identity.restaurantID,
+			ticketID,
+			"PICKUP_READY",
+			"Your order is ready",
+			"Please proceed to the pickup counter.",
+		); err != nil {
+			writeMappedError(w, r, controller.logger, err)
+			return
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		writeMappedError(w, r, controller.logger, fmt.Errorf("commit order status update: %w", err))
 		return

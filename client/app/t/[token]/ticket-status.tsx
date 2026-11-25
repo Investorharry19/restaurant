@@ -59,6 +59,469 @@ function formatUpdatedAt(value: string): string {
   }).format(new Date(value));
 }
 
+type PushSubscriptionPayload = {
+  endpoint: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+};
+
+type PushPreferenceState =
+  | "checking"
+  | "ready"
+  | "enabled"
+  | "denied"
+  | "unavailable"
+  | "unsupported"
+  | "busy"
+  | "error";
+
+function decodeVapidKey(data: unknown): string {
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    typeof (data as Record<string, unknown>).publicKey !== "string"
+  ) {
+    throw new TypeError("The push notification key response is invalid.");
+  }
+  return (data as Record<string, string>).publicKey;
+}
+
+function decodeEmpty(data: unknown): Record<string, never> {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new TypeError("The push notification response is invalid.");
+  }
+  return {};
+}
+
+function applicationServerKey(value: string): ArrayBuffer {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
+}
+
+function serializeSubscription(
+  subscription: PushSubscription,
+): PushSubscriptionPayload {
+  const json = subscription.toJSON();
+  if (
+    !subscription.endpoint ||
+    typeof json.keys?.p256dh !== "string" ||
+    typeof json.keys.auth !== "string"
+  ) {
+    throw new TypeError(
+      "The browser returned an incomplete push subscription.",
+    );
+  }
+  return {
+    endpoint: subscription.endpoint,
+    keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+  };
+}
+
+async function savePushSubscription(
+  token: string,
+  subscription: PushSubscription,
+): Promise<void> {
+  await apiRequest(
+    `/api/public/tickets/${encodeURIComponent(token)}/push-subscriptions`,
+    decodeEmpty,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(serializeSubscription(subscription)),
+    },
+  );
+}
+
+async function deletePushSubscription(
+  token: string,
+  endpoint: string,
+): Promise<void> {
+  await apiRequest(
+    `/api/public/tickets/${encodeURIComponent(token)}/push-subscriptions`,
+    decodeEmpty,
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint }),
+    },
+  );
+}
+
+function TicketPushControls({
+  token,
+  status,
+}: {
+  token: string;
+  status: TicketStatus;
+}) {
+  const [pushState, setPushState] = useState<PushPreferenceState>("checking");
+  const [message, setMessage] = useState<string | null>(null);
+  const [vapidKey, setVapidKey] = useState<string | null>(null);
+
+  const canReceiveUpdates = [
+    "WAITING",
+    "CALLED",
+    "ARRIVED",
+    "PREPARING",
+    "READY",
+  ].includes(status);
+
+  useEffect(() => {
+    if (!canReceiveUpdates) {
+      return;
+    }
+
+    let active = true;
+    let registration: ServiceWorkerRegistration | null = null;
+
+    const showSetupState = () => {
+      if (!active) {
+        return;
+      }
+      if (
+        !("Notification" in window) ||
+        !("serviceWorker" in navigator) ||
+        !("PushManager" in window)
+      ) {
+        setPushState("unsupported");
+        return;
+      }
+      setPushState(Notification.permission === "denied" ? "denied" : "ready");
+    };
+
+    const syncCurrentSubscription = async (previousEndpoint?: string) => {
+      if (
+        !registration ||
+        !("Notification" in window) ||
+        Notification.permission === "denied"
+      ) {
+        return false;
+      }
+      const subscription = await registration.pushManager.getSubscription();
+      if (previousEndpoint && previousEndpoint !== subscription?.endpoint) {
+        await deletePushSubscription(token, previousEndpoint);
+      }
+      if (subscription) {
+        await savePushSubscription(token, subscription);
+        if (active) {
+          setPushState("enabled");
+          setMessage(null);
+        }
+        return true;
+      }
+      return false;
+    };
+
+    const onServiceWorkerMessage = (event: MessageEvent<unknown>) => {
+      if (
+        typeof event.data !== "object" ||
+        event.data === null ||
+        !("type" in event.data)
+      ) {
+        return;
+      }
+      if (event.data.type === "PUSH_SUBSCRIPTION_REFRESH_FAILED") {
+        setPushState("error");
+        setMessage(
+          "This device could not renew ticket alerts. Try enabling them again.",
+        );
+        return;
+      }
+      if (event.data.type !== "PUSH_SUBSCRIPTION_CHANGED") {
+        return;
+      }
+      const previousEndpoint =
+        "previousEndpoint" in event.data &&
+        typeof event.data.previousEndpoint === "string"
+          ? event.data.previousEndpoint
+          : undefined;
+      void syncCurrentSubscription(previousEndpoint).catch(() => {
+        if (active) {
+          setPushState("error");
+          setMessage(
+            "We could not refresh this device's alert subscription. Try again.",
+          );
+        }
+      });
+    };
+
+    navigator.serviceWorker?.addEventListener(
+      "message",
+      onServiceWorkerMessage,
+    );
+
+    async function preparePush() {
+      if (
+        !("Notification" in window) ||
+        !("serviceWorker" in navigator) ||
+        !("PushManager" in window)
+      ) {
+        showSetupState();
+        return;
+      }
+      if (Notification.permission === "denied") {
+        showSetupState();
+        return;
+      }
+      try {
+        registration = await navigator.serviceWorker.register("/sw.js", {
+          scope: "/",
+        });
+        const key = await apiRequest(
+          "/api/public/push/vapid-key",
+          decodeVapidKey,
+        );
+        if (active) {
+          setVapidKey(key);
+        }
+        const hasSubscription = await syncCurrentSubscription();
+        if (active && !hasSubscription) {
+          showSetupState();
+        }
+      } catch (error: unknown) {
+        if (active) {
+          setPushState(
+            error instanceof ApiError && error.status === 503
+              ? "unavailable"
+              : "error",
+          );
+          setMessage(
+            error instanceof ApiError
+              ? error.message
+              : "We could not prepare alerts on this device. Try again.",
+          );
+        }
+      }
+    }
+
+    void preparePush();
+    return () => {
+      active = false;
+      navigator.serviceWorker?.removeEventListener(
+        "message",
+        onServiceWorkerMessage,
+      );
+    };
+  }, [canReceiveUpdates, token]);
+
+  if (!canReceiveUpdates) {
+    return null;
+  }
+
+  async function checkPushAvailability() {
+    setPushState("busy");
+    setMessage(null);
+    if (
+      !("Notification" in window) ||
+      !("serviceWorker" in navigator) ||
+      !("PushManager" in window)
+    ) {
+      setPushState("unsupported");
+      return;
+    }
+    if (Notification.permission === "denied") {
+      setPushState("denied");
+      return;
+    }
+    try {
+      const key = await apiRequest(
+        "/api/public/push/vapid-key",
+        decodeVapidKey,
+      );
+      setVapidKey(key);
+      const registration = await navigator.serviceWorker.register("/sw.js", {
+        scope: "/",
+      });
+      const subscription = await registration.pushManager.getSubscription();
+      if (subscription && Notification.permission === "granted") {
+        await savePushSubscription(token, subscription);
+        setPushState("enabled");
+      } else {
+        setPushState("ready");
+      }
+    } catch (error: unknown) {
+      setPushState(
+        error instanceof ApiError && error.status === 503
+          ? "unavailable"
+          : "error",
+      );
+      setMessage(
+        error instanceof ApiError
+          ? error.message
+          : "We could not check ticket alerts. Try again.",
+      );
+    }
+  }
+
+  async function enablePush() {
+    setPushState("busy");
+    setMessage(null);
+    try {
+      if (
+        !("Notification" in window) ||
+        !("serviceWorker" in navigator) ||
+        !("PushManager" in window)
+      ) {
+        setPushState("unsupported");
+        return;
+      }
+
+      let permission = Notification.permission;
+      if (permission === "default") {
+        permission = await Notification.requestPermission();
+      }
+      if (permission === "denied") {
+        setPushState("denied");
+        return;
+      }
+      if (permission !== "granted") {
+        setPushState("ready");
+        return;
+      }
+
+      const registration =
+        (await navigator.serviceWorker.getRegistration("/")) ??
+        (await navigator.serviceWorker.register("/sw.js", { scope: "/" }));
+      const existing = await registration.pushManager.getSubscription();
+      let subscription = existing;
+      if (!subscription) {
+        if (!vapidKey) {
+          setPushState("unavailable");
+          setMessage("Ticket alerts are not configured for this service.");
+          return;
+        }
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: applicationServerKey(vapidKey),
+        });
+      }
+      await savePushSubscription(token, subscription);
+      setPushState("enabled");
+    } catch (error: unknown) {
+      setPushState("error");
+      setMessage(
+        error instanceof ApiError
+          ? error.message
+          : "We could not enable alerts on this device. Try again.",
+      );
+    }
+  }
+
+  async function disablePush() {
+    setPushState("busy");
+    setMessage(null);
+    try {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      const subscription = await registration?.pushManager.getSubscription();
+      if (subscription) {
+        await deletePushSubscription(token, subscription.endpoint);
+        try {
+          await subscription.unsubscribe();
+        } catch {
+          setPushState("ready");
+          setMessage(
+            "Alerts are disabled for this ticket, but this browser could not remove its local subscription. You can remove it in browser settings.",
+          );
+          return;
+        }
+      }
+      setPushState("ready");
+    } catch (error: unknown) {
+      setPushState("error");
+      setMessage(
+        error instanceof ApiError
+          ? error.message
+          : "We could not disable alerts on this device. Try again.",
+      );
+    }
+  }
+
+  return (
+    <section
+      aria-labelledby="ticket-alerts-heading"
+      className={styles.pushPreference}
+    >
+      <h2 id="ticket-alerts-heading">Get ticket alerts</h2>
+      <p>
+        Get a notification when the restaurant calls your table or your pickup
+        order is ready. You can turn alerts off at any time.
+      </p>
+      {pushState === "enabled" ? (
+        <button
+          className={styles.refreshButton}
+          onClick={() => void disablePush()}
+          type="button"
+        >
+          Turn off alerts
+        </button>
+      ) : pushState === "checking" || pushState === "busy" ? (
+        <p aria-live="polite" role="status">
+          {pushState === "checking"
+            ? "Checking this device..."
+            : "Updating alerts..."}
+        </p>
+      ) : pushState === "denied" ? (
+        <p role="status">
+          Alerts are blocked by your browser. Change this site&apos;s
+          notification permission in browser settings to enable them.
+        </p>
+      ) : pushState === "unsupported" ? (
+        <p role="status">
+          This browser does not support ticket notifications. Keep this page
+          open to see live status updates.
+        </p>
+      ) : pushState === "unavailable" ? (
+        <>
+          <p role="status">
+            Ticket alerts are not available right now. Keep this page open to
+            see live status updates.
+          </p>
+          {message && (
+            <p className={styles.pushWarning} role="alert">
+              {message}
+            </p>
+          )}
+          <button
+            className={styles.refreshButton}
+            onClick={() => void checkPushAvailability()}
+            type="button"
+          >
+            Check alerts again
+          </button>
+        </>
+      ) : (
+        <>
+          {message && (
+            <p className={styles.pushWarning} role="alert">
+              {message}
+            </p>
+          )}
+          <button
+            className={styles.refreshButton}
+            onClick={() =>
+              pushState === "error"
+                ? void checkPushAvailability()
+                : void enablePush()
+            }
+            type="button"
+          >
+            {pushState === "error"
+              ? "Check alerts again"
+              : "Enable ticket alerts"}
+          </button>
+        </>
+      )}
+    </section>
+  );
+}
+
 export function TicketStatusPage({ token }: { token: string }) {
   const [loadedTicket, setLoadedTicket] = useState<LoadedTicket | null>(null);
   const [requestState, setRequestState] = useState<{
@@ -202,6 +665,8 @@ export function TicketStatusPage({ token }: { token: string }) {
                   {ticket.positionMessage}
                 </p>
               )}
+
+              <TicketPushControls token={token} status={ticket.status} />
 
               <div className={styles.ticketFooter}>
                 <p>Updated {formatUpdatedAt(ticket.updatedAt)}</p>
